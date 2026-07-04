@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "weekend-hack-local": {
+      "command": "/home/sai-nivedh-26/weekend-hack/hoo/bin/python3",
+      "args": ["mcp_server.py"],
+      "cwd": "/home/sai-nivedh-26/weekend-hack/gemini-live-ephemeral-tokens-websocket"
+    },
+    "weekend-hack-remote": {
+      "url": "http://localhost:9000/mcp",
+      "headers": {
+        "Authorization": "Bearer REPLACE_WITH_TOKEN"
+      }
+    }
+  }
+}

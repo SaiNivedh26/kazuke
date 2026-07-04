@@ -131,3 +131,11 @@ async def calendar_create_event(summary: str, start_datetime: str, timezone: str
         arguments["description"] = description
     result = await composio_client.call_tool("GOOGLECALENDAR_CREATE_EVENT", arguments)
     return result
+
+
+async def calendar_delete_event(event_id: str, calendar_id: str = "primary"):
+    result = await composio_client.call_tool("GOOGLECALENDAR_DELETE_EVENT", {
+        "event_id": event_id,
+        "calendar_id": calendar_id
+    })
+    return result
