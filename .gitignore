@@ -1,0 +1,8 @@
+__pycache__
+.venv
+.env
+hoo/
+gemini-live-ephemeral-tokens-websocket/.env
+gemini-live-ephemeral-tokens-websocket/__pycache__
+gemini-live-ephemeral-tokens-websocket/.venv
+**/.env

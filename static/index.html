@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Knowledge Graph</title>
+    <script src="https://unpkg.com/gojs@2.3.18/release/go.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; display: flex; height: 100vh; }
+        .sidebar { width: 380px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
+        .sidebar-header h1 { font-size: 16px; color: #58a6ff; margin-bottom: 8px; }
+        .sidebar-content { flex: 1; overflow-y: auto; padding: 16px; }
+        .section { margin-bottom: 20px; }
+        .section-title { font-size: 12px; text-transform: uppercase; color: #8b949e; margin-bottom: 8px; letter-spacing: 0.5px; }
+        .input-group { display: flex; gap: 8px; margin-bottom: 8px; }
+        input, button { padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+        input { flex: 1; }
+        input:focus { outline: none; border-color: #58a6ff; }
+        button { cursor: pointer; border: 1px solid #30363d; background: #21262d; }
+        button:hover { background: #30363d; }
+        button.primary { background: #238636; border-color: #238636; color: #fff; }
+        button.primary:hover { background: #2ea043; }
+        button.danger { background: #da3633; border-color: #da3633; color: #fff; }
+        button.danger:hover { background: #f85149; }
+        .status { padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-top: 8px; }
+        .status.success { background: #1a3a2a; color: #3fb950; border: 1px solid #238636; }
+        .status.error { background: #3d1a1a; color: #f85149; border: 1px solid #da3633; }
+        .status.info { background: #1a2a3d; color: #58a6ff; border: 1px solid #1f6feb; }
+        .search-result { padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; margin-top: 8px; font-size: 13px; line-height: 1.5; }
+        .session-badge { display: inline-block; padding: 2px 8px; background: #1f6feb33; color: #58a6ff; border-radius: 12px; font-size: 11px; margin-left: 8px; }
+        .graph-container { flex: 1; position: relative; min-width: 0; }
+        #myDiagramDiv { width: 100%; height: 100%; min-height: 400px; background: #0d1117; }
+        .graph-overlay { position: absolute; top: 12px; right: 12px; display: flex; gap: 8px; }
+        .graph-overlay button { padding: 6px 12px; font-size: 12px; }
+        .node-count { position: absolute; bottom: 12px; left: 12px; padding: 4px 10px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; font-size: 11px; color: #8b949e; }
+        .log-entry { padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 12px; color: #8b949e; }
+        .log-entry .time { color: #484f58; margin-right: 6px; }
+        .log-entry .action { color: #58a6ff; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>🧠 Knowledge Graph Builder</h1>
+            <div style="font-size: 11px; color: #8b949e;">
+                Session: <span id="sessionId" class="session-badge">none</span>
+            </div>
+        </div>
+        <div class="sidebar-content">
+            <div class="section">
+                <div class="section-title">Add Memory</div>
+                <div class="input-group">
+                    <input type="text" id="memoryInput" placeholder="Type a memory or fact..." />
+                    <button class="primary" onclick="addMemory()">Add</button>
+                </div>
+                <div id="addStatus"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Search Graph</div>
+                <div class="input-group">
+                    <input type="text" id="searchInput" placeholder="Ask a question..." />
+                    <button onclick="searchGraph()">Search</button>
+                </div>
+                <div id="searchResults"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Session Management</div>
+                <div class="input-group">
+                    <button onclick="createSession()">New Session</button>
+                    <button class="danger" onclick="resetSession()">Reset Graph</button>
+                </div>
+                <div id="sessionStatus"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Activity Log</div>
+                <div id="activityLog"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="graph-container">
+        <div id="myDiagramDiv"></div>
+        <div class="graph-overlay">
+            <button onclick="refreshGraph()">Refresh</button>
+            <button onclick="fitDiagram()">Fit</button>
+        </div>
+        <div class="node-count" id="nodeCount">Nodes: 0 | Edges: 0</div>
+    </div>
+
+    <script>
+        let ws;
+        let currentSessionId = null;
+        let diagram = null;
+
+        function initDiagram() {
+            console.log("Initializing GoJS diagram...");
+            
+            if (typeof go === 'undefined') {
+                console.error("GoJS library not loaded!");
+                alert("GoJS library failed to load!");
+                return;
+            }
+            
+            const div = document.getElementById("myDiagramDiv");
+            console.log("Diagram div:", div, "dimensions:", div.offsetWidth, "x", div.offsetHeight);
+            
+            if (diagram) {
+                console.log("Diagram already initialized, skipping");
+                return;
+            }
+            
+            const $ = go.GraphObject.make;
+            diagram = $(go.Diagram, "myDiagramDiv", {
+                "undoManager.isEnabled": true,
+                layout: $(go.ForceDirectedLayout, { maxIterations: 200, epsilonDistance: 10 }),
+                "animationManager.isEnabled": true,
+                "initialAutoScale": go.AutoScale.Uniform,
+                "padding": new go.Margin(30, 30, 30, 30),
+                "allowDrop": false,
+                "allowInsert": false
+            });
+            
+            console.log("Diagram created:", diagram);
+
+            diagram.nodeTemplate = $(go.Node, "Auto",
+                { locationSpot: go.Spot.Center },
+                new go.Binding("location", "loc", go.Point.parse).makeTwoWay(go.Point.stringify),
+                $(go.Shape, "RoundedRectangle", {
+                    strokeWidth: 1.5,
+                    desiredSize: new go.Size(130, 44),
+                    portId: "",
+                    cursor: "pointer"
+                },
+                new go.Binding("fill", "fill"),
+                new go.Binding("stroke", "stroke")),
+                $(go.TextBlock, {
+                    font: "bold 12px -apple-system, sans-serif",
+                    fill: "#ffffff",
+                    textAlign: "center",
+                    verticalAlignment: go.Spot.Center,
+                    wrap: go.TextBlock.WrapFit,
+                    margin: 4
+                }, new go.Binding("text", "text"))
+            );
+
+            diagram.linkTemplate = $(go.Link,
+                { curve: go.Link.Bezier, toShortLength: 4 },
+                $(go.Shape, { stroke: "#8b949e", strokeWidth: 1.5 }),
+                $(go.Shape, { toFill: "#8b949e", scale: 0.5 }),
+                $(go.TextBlock, {
+                    font: "10px -apple-system, sans-serif",
+                    fill: "#8b949e",
+                    segmentOffset: new go.Point(0, -10),
+                    segmentIndex: 0
+                }, new go.Binding("text", "text"))
+            );
+
+            diagram.model = $(go.GraphLinksModel, {
+                nodeKeyProperty: "id",
+                linkFromProperty: "from",
+                linkToProperty: "to"
+            });
+        }
+
+        function updateGraph(graphData) {
+            console.log("updateGraph called with:", graphData);
+            if (!graphData || !graphData.nodes) {
+                console.warn("No graph data or nodes missing");
+                return;
+            }
+
+            const meaningfulTypes = new Set(["Entity", "EntityType"]);
+            const entityNodes = graphData.nodes.filter(n => meaningfulTypes.has(n.type));
+            const entityIds = new Set(entityNodes.map(n => n.id));
+
+            console.log(`Found ${entityNodes.length} entity nodes out of ${graphData.nodes.length} total`);
+
+            const nodeDataArray = [];
+            const linkDataArray = [];
+            let idCounter = 1;
+            const nodeIdMap = {};
+
+            const typeColors = {
+                "Entity": { fill: "#1f6feb", stroke: "#58a6ff" },
+                "EntityType": { fill: "#8957e5", stroke: "#a371f7" }
+            };
+
+            entityNodes.forEach(node => {
+                const goId = idCounter++;
+                nodeIdMap[node.id] = goId;
+                const colors = typeColors[node.type] || typeColors["Entity"];
+                const label = node.label || node.id.substring(0, 12);
+                console.log(`Adding node: ${label} (id=${goId})`);
+                nodeDataArray.push({
+                    id: goId,
+                    text: label,
+                    nodeType: node.type,
+                    fill: colors.fill,
+                    stroke: colors.stroke,
+                    description: node.properties?.description || ""
+                });
+            });
+
+            if (graphData.edges) {
+                graphData.edges.forEach(edge => {
+                    if (!entityIds.has(edge.source) || !entityIds.has(edge.target)) return;
+                    const fromId = nodeIdMap[edge.source];
+                    const toId = nodeIdMap[edge.target];
+                    if (fromId && toId) {
+                        console.log(`Adding edge: ${fromId} -> ${toId} (${edge.label})`);
+                        linkDataArray.push({
+                            from: fromId,
+                            to: toId,
+                            text: edge.label || ""
+                        });
+                    }
+                });
+            }
+
+            console.log(`Final: ${nodeDataArray.length} nodes, ${linkDataArray.length} edges`);
+
+            const model = $(go.GraphLinksModel, {
+                nodeKeyProperty: "id",
+                nodeDataArray: nodeDataArray,
+                linkFromProperty: "from",
+                linkToProperty: "to",
+                linkDataArray: linkDataArray
+            });
+
+            diagram.model = model;
+            console.log("Model set. Diagram nodes:", diagram.nodes.count, "links:", diagram.links.count);
+            console.log("Diagram bounds:", diagram.documentBounds.toString());
+
+            document.getElementById("nodeCount").textContent =
+                `Nodes: ${nodeDataArray.length} | Edges: ${linkDataArray.length}`;
+
+            setTimeout(() => {
+                console.log("Running layout...");
+                diagram.layoutDiagram(true);
+                console.log("After layout, bounds:", diagram.documentBounds.toString());
+                console.log("After layout, nodes:", diagram.nodes.count);
+                fitDiagram();
+                console.log("After fit, scale:", diagram.scale);
+            }, 50);
+        }
+
+        function fitDiagram() {
+            diagram.scale = 1;
+            diagram.commandHandler.zoomToFit();
+        }
+
+        async function addMemory() {
+            const input = document.getElementById("memoryInput");
+            const text = input.value.trim();
+            if (!text) return;
+
+            showStatus("addStatus", "Processing...", "info");
+            addLog("Adding memory");
+
+            try {
+                const resp = await fetch("/api/add", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text, dataset_name: "realtime_memory" })
+                });
+                const data = await resp.json();
+
+                if (data.error) {
+                    showStatus("addStatus", `Error: ${data.error}`, "error");
+                } else {
+                    showStatus("addStatus", "Memory added & graph updated!", "success");
+                    if (data.graph) updateGraph(data.graph);
+                    input.value = "";
+                    addLog("Graph updated");
+                }
+            } catch (e) {
+                showStatus("addStatus", `Error: ${e.message}`, "error");
+            }
+        }
+
+        async function searchGraph() {
+            const input = document.getElementById("searchInput");
+            const query = input.value.trim();
+            if (!query) return;
+
+            addLog(`Search: "${query}"`);
+
+            try {
+                const resp = await fetch("/api/search", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query, dataset_name: "realtime_memory" })
+                });
+                const data = await resp.json();
+
+                let html = "";
+                if (Array.isArray(data)) {
+                    data.forEach(item => {
+                        if (item.search_result) {
+                            item.search_result.forEach(r => {
+                                html += `<div class="search-result">${r}</div>`;
+                            });
+                        } else if (typeof item === "string") {
+                            html += `<div class="search-result">${item}</div>`;
+                        }
+                    });
+                } else {
+                    html = `<div class="search-result">${JSON.stringify(data)}</div>`;
+                }
+                document.getElementById("searchResults").innerHTML = html || '<div class="search-result">No results</div>';
+            } catch (e) {
+                document.getElementById("searchResults").innerHTML = `<div class="search-result" style="color:#f85149">Error: ${e.message}</div>`;
+            }
+        }
+
+        async function createSession() {
+            try {
+                const resp = await fetch("/api/session/create", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ dataset_name: "realtime_memory" })
+                });
+                const data = await resp.json();
+                currentSessionId = data.session_id;
+                document.getElementById("sessionId").textContent = currentSessionId.substring(0, 8);
+                showStatus("sessionStatus", `Session created: ${currentSessionId}`, "success");
+                addLog("New session created");
+            } catch (e) {
+                showStatus("sessionStatus", `Error: ${e.message}`, "error");
+            }
+        }
+
+        async function resetSession() {
+            showStatus("sessionStatus", "Resetting graph...", "info");
+            addLog("Resetting graph");
+
+            try {
+                const resp = await fetch("/api/session/reset", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ dataset_name: "realtime_memory" })
+                });
+                const data = await resp.json();
+                showStatus("sessionStatus", "Graph reset successfully", "success");
+                updateGraph({ nodes: [], edges: [] });
+                addLog("Graph cleared");
+            } catch (e) {
+                showStatus("sessionStatus", `Error: ${e.message}`, "error");
+            }
+        }
+
+        async function refreshGraph() {
+            console.log("refreshGraph() called");
+            addLog("Refreshing graph");
+            try {
+                const resp = await fetch("/api/graph/realtime_memory");
+                console.log("Fetch response status:", resp.status);
+                const data = await resp.json();
+                console.log("Graph data received:", data);
+                console.log("Nodes:", data.nodes?.length, "Edges:", data.edges?.length);
+                updateGraph(data);
+            } catch (e) {
+                console.error("Refresh failed:", e);
+            }
+        }
+
+        function showStatus(elementId, message, type) {
+            document.getElementById(elementId).innerHTML = `<div class="status ${type}">${message}</div>`;
+            setTimeout(() => { document.getElementById(elementId).innerHTML = ""; }, 5000);
+        }
+
+        function addLog(action) {
+            const log = document.getElementById("activityLog");
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML = `<div class="log-entry"><span class="time">${time}</span><span class="action">${action}</span></div>` + log.innerHTML;
+            if (log.children.length > 20) log.removeChild(log.lastChild);
+        }
+
+        function connectWebSocket() {
+            const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === "graph_update") {
+                    updateGraph(msg.data);
+                    addLog("Real-time update received");
+                }
+            };
+
+            ws.onclose = () => {
+                setTimeout(connectWebSocket, 2000);
+            };
+        }
+
+        document.getElementById("memoryInput").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") addMemory();
+        });
+        document.getElementById("searchInput").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") searchGraph();
+        });
+
+        initDiagram();
+        connectWebSocket();
+        refreshGraph();
+    </script>
+</body>
+</html>
