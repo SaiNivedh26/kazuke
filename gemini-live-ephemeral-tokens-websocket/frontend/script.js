@@ -33,6 +33,13 @@ function initDOM() {
     "enableNotionCreatePage",
     "enableNotionAppend",
     "enableNotionGetPage",
+    "enableSlackSend",
+    "enableSlackListChannels",
+    "enableGmailFetch",
+    "enableGmailSend",
+    "enableCalendarGetEvents",
+    "enableCalendarCreateEvent",
+    "enableCalendarDeleteEvent",
     "voiceSelect",
     "temperature",
     "temperatureValue",
@@ -224,6 +231,43 @@ async function connect() {
         const notionGetPage = new NotionGetPageTool();
         state.client.addFunction(notionGetPage);
         console.log("✅ Notion get page tool enabled");
+      }
+
+      // Composio MCP tools (Slack, Gmail, Calendar)
+      if (elements.enableSlackSend && elements.enableSlackSend.checked) {
+        const slackSend = new SlackSendMessageTool();
+        state.client.addFunction(slackSend);
+        console.log("✅ Slack send message tool enabled");
+      }
+      if (elements.enableSlackListChannels && elements.enableSlackListChannels.checked) {
+        const slackListChannels = new SlackListChannelsTool();
+        state.client.addFunction(slackListChannels);
+        console.log("✅ Slack list channels tool enabled");
+      }
+      if (elements.enableGmailFetch && elements.enableGmailFetch.checked) {
+        const gmailFetch = new GmailFetchTool();
+        state.client.addFunction(gmailFetch);
+        console.log("✅ Gmail fetch tool enabled");
+      }
+      if (elements.enableGmailSend && elements.enableGmailSend.checked) {
+        const gmailSend = new GmailSendTool();
+        state.client.addFunction(gmailSend);
+        console.log("✅ Gmail send tool enabled");
+      }
+      if (elements.enableCalendarGetEvents && elements.enableCalendarGetEvents.checked) {
+        const calendarGetEvents = new CalendarGetEventsTool();
+        state.client.addFunction(calendarGetEvents);
+        console.log("✅ Calendar get events tool enabled");
+      }
+      if (elements.enableCalendarCreateEvent && elements.enableCalendarCreateEvent.checked) {
+        const calendarCreateEvent = new CalendarCreateEventTool();
+        state.client.addFunction(calendarCreateEvent);
+        console.log("✅ Calendar create event tool enabled");
+      }
+      if (elements.enableCalendarDeleteEvent && elements.enableCalendarDeleteEvent.checked) {
+        const calendarDeleteEvent = new CalendarDeleteEventTool();
+        state.client.addFunction(calendarDeleteEvent);
+        console.log("✅ Calendar delete event tool enabled");
       }
     } else {
       console.log(

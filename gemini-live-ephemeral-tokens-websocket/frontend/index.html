@@ -169,6 +169,55 @@ Notion tools (ONLY use when user explicitly asks):
 - notion_append_to_page: Add content to an existing page (needs page ID)
 - notion_get_page: Read page content as markdown (needs page ID)
 
+Composio tools (Slack, Gmail, Calendar - ONLY use when user explicitly asks):
+- slack_send_message: Send a message to a Slack channel
+- slack_list_channels: List all available Slack channels
+- gmail_fetch_emails: Fetch/search emails from Gmail
+- gmail_send_email: Send an email via Gmail
+- calendar_get_events: Get upcoming events from Google Calendar
+- calendar_create_event: Create a new calendar event
+- calendar_delete_event: Delete an event from Google Calendar
+
+CALENDAR EVENT CREATION FORMAT:
+When creating calendar events, you MUST use these exact formats:
+- start_datetime: ISO 8601 format WITHOUT timezone suffix (e.g., "2025-01-08T22:30:00" for 10:30 PM)
+- timezone: IANA timezone name (e.g., "Asia/Kolkata" for IST, "America/New_York" for EST). DEFAULT is "Asia/Kolkata" (IST) unless user specifies otherwise
+- end_datetime: ISO 8601 format WITHOUT timezone suffix (optional)
+- OR use event_duration_hour and event_duration_minutes instead of end_datetime
+
+Timezone conversions:
+- IST (Indian Standard Time) = "Asia/Kolkata" (DEFAULT)
+- EST (Eastern Standard Time) = "America/New_York"
+- PST (Pacific Standard Time) = "America/Los_Angeles"
+- UTC = "UTC"
+
+Example: User says "schedule meeting at 10:30 PM today"
+- Calculate today's date: 2025-01-08
+- Convert 10:30 PM to 24-hour format: 22:30:00
+- Call calendar_create_event with:
+  - start_datetime: "2025-01-08T22:30:00"
+  - timezone: "Asia/Kolkata" (DEFAULT - don't ask user, just use IST)
+  - event_duration_hour: 1 (or provide end_datetime)
+
+CALENDAR EVENT DELETION WORKFLOW:
+When user asks to delete events:
+1. FIRST, use calendar_get_events to list events and get their event IDs
+2. For each event to delete, call calendar_delete_event with the event_id
+3. You can delete multiple events by calling calendar_delete_event multiple times
+4. Always confirm which events will be deleted before proceeding
+
+Example: User says "delete all events today"
+- Call calendar_get_events with time_min and time_max for today
+- Extract event IDs from the response
+- For each event, call calendar_delete_event with that event_id
+- Report which events were deleted
+
+WORKFLOW - When user asks about emails, calendar, or Slack:
+1. Use the appropriate Composio tool directly
+2. After fetching information, ALWAYS call cognee_remember to store important details
+   Example: "On 2025-01-08: User has a meeting with John at 3 PM tomorrow"
+3. This allows cross-session recall of emails, events, and messages
+
 IMPORTANT: Don't call cognee_recall for things the user just told you in this session - you already know those!</textarea>
           </div>
 
@@ -274,6 +323,51 @@ IMPORTANT: Don't call cognee_recall for things the user just told you in this se
             <input type="checkbox" id="enableNotionGetPage" checked />
             <label for="enableNotionGetPage">Get Page</label>
             <span> (Read Notion page content) </span>
+          </div>
+
+          <hr style="margin: 10px 0;" />
+          <div><strong>Composio MCP Tools (Slack, Gmail, Calendar):</strong></div>
+
+          <div>
+            <input type="checkbox" id="enableSlackSend" checked />
+            <label for="enableSlackSend">Slack Send Message</label>
+            <span> (Send message to channel) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableSlackListChannels" checked />
+            <label for="enableSlackListChannels">Slack List Channels</label>
+            <span> (List all Slack channels) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableGmailFetch" checked />
+            <label for="enableGmailFetch">Gmail Fetch Emails</label>
+            <span> (Read/search emails) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableGmailSend" checked />
+            <label for="enableGmailSend">Gmail Send Email</label>
+            <span> (Send email) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableCalendarGetEvents" checked />
+            <label for="enableCalendarGetEvents">Calendar Get Events</label>
+            <span> (View calendar events) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableCalendarCreateEvent" checked />
+            <label for="enableCalendarCreateEvent">Calendar Create Event</label>
+            <span> (Schedule new event) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableCalendarDeleteEvent" checked />
+            <label for="enableCalendarDeleteEvent">Calendar Delete Event</label>
+            <span> (Delete/remove event) </span>
           </div>
         </details>
 

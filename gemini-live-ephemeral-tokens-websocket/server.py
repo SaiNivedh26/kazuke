@@ -22,6 +22,7 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 from notion_mcp_client import notion_client, init_notion, notion_search, notion_create_page, notion_append_to_page, notion_get_page
+from composio_mcp_client import composio_client, init_composio
 
 HTTP_PORT = 8000
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -325,6 +326,39 @@ async def notion_list_tools_endpoint(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+# Composio MCP endpoints
+async def composio_call_endpoint(request):
+    """Generic endpoint to call any Composio tool."""
+    try:
+        data = await request.json()
+        tool_name = data.get("tool_name", "")
+        arguments = data.get("arguments", {})
+
+        if not tool_name:
+            return web.json_response({"error": "tool_name is required"}, status=400)
+
+        result = await composio_client.call_tool(tool_name, arguments)
+        return web.json_response({"result": result})
+
+    except Exception as e:
+        print(f"Composio call error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def composio_list_tools_endpoint(request):
+    """List available Composio MCP tools."""
+    try:
+        if not composio_client.session:
+            return web.json_response({"error": "Composio MCP client not connected"}, status=500)
+
+        tools = [{"name": t.name, "description": t.description} for t in composio_client.tools]
+        return web.json_response({"tools": tools})
+
+    except Exception as e:
+        print(f"Composio list tools error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def serve_static_file(request):
     """Serve static files from the frontend directory."""
     path = request.match_info.get("path", "index.html")
@@ -380,12 +414,23 @@ async def main():
     app.router.add_post("/api/notion/get_page", notion_get_page_endpoint)
     app.router.add_get("/api/notion/tools", notion_list_tools_endpoint)
 
+    # Composio MCP endpoints (Slack, Gmail, Google Calendar)
+    app.router.add_post("/api/composio/call", composio_call_endpoint)
+    app.router.add_get("/api/composio/tools", composio_list_tools_endpoint)
+
     # Initialize Notion MCP client
     notion_ok = await init_notion()
     if notion_ok:
         print("  ✅ Notion MCP connected")
     else:
         print("  ⚠️  Notion MCP not available (set NOTION_ACCESS_TOKEN)")
+
+    # Initialize Composio MCP client
+    composio_ok = await init_composio()
+    if composio_ok:
+        print("  ✅ Composio MCP connected (Slack, Gmail, Calendar)")
+    else:
+        print("  ⚠️  Composio MCP not available (set COMPOSIO_API_KEY)")
     
     # Static files
     app.router.add_get("/", serve_static_file)
