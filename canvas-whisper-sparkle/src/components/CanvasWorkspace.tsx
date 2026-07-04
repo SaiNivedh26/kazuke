@@ -10,8 +10,11 @@ import {
   Plus,
   Minus,
   Monitor,
+  Camera,
+  CameraOff,
 } from "lucide-react";
 import { VoiceAura, type AuraState } from "./VoiceAura";
+import { ToolsDrawer } from "./ToolsDrawer";
 import addFilesSvg from "@/assets/add_files.svg";
 import docReadySvg from "@/assets/doc_ready.svg";
 import loadingLottieData from "@/assets/loading_lottie.json";
@@ -41,6 +44,7 @@ export function CanvasWorkspace() {
   const [status, setStatus] = useState<"success" | "failure">("success");
   const [linkCount, setLinkCount] = useState(2);
   const [muted, setMuted] = useState(true);
+  const [cameraOn, setCameraOn] = useState(false);
   const [kbActive, setKbActive] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [agentState, setAgentState] = useState<AuraState>("connecting");
@@ -314,6 +318,25 @@ export function CanvasWorkspace() {
         >
           <Monitor className="w-5 h-5 text-foreground" />
         </button>
+
+        <button
+          type="button"
+          onClick={() => setCameraOn((v) => !v)}
+          className={`h-12 w-12 rounded-xl grid place-items-center shadow-sm active:scale-95 transition-all ${
+            cameraOn
+              ? "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-600"
+              : "bg-background border border-border hover:border-primary/40 hover:bg-accent"
+          }`}
+          aria-label={cameraOn ? "Turn camera off" : "Turn camera on"}
+        >
+          {cameraOn ? (
+            <Camera className="w-5 h-5" />
+          ) : (
+            <CameraOff className="w-5 h-5 text-foreground" />
+          )}
+        </button>
+
+        <ToolsDrawer />
 
         <input
           ref={fileInputRef}
