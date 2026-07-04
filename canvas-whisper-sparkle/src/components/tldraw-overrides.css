@@ -1,0 +1,45 @@
+/* Dock tldraw v5's main toolbar as a vertical rail on the left. */
+.tldraw-vertical-toolbar .tlui-layout__bottom {
+  pointer-events: none;
+}
+.tldraw-vertical-toolbar .tlui-layout__bottom > * {
+  pointer-events: auto;
+}
+
+.tldraw-vertical-toolbar .tlui-main-toolbar {
+  position: fixed !important;
+  left: 12px !important;
+  top: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 30px -8px rgba(0, 0, 0, 0.18) !important;
+}
+
+.tldraw-vertical-toolbar [class*="tlui-main-toolbar"],
+.tldraw-vertical-toolbar .tlui-main-toolbar .tlui-row,
+.tldraw-vertical-toolbar .tlui-toolbar-toggle-group,
+.tldraw-vertical-toolbar .tlui-main-toolbar > *,
+.tldraw-vertical-toolbar .tlui-main-toolbar__inner > *,
+.tldraw-vertical-toolbar .tlui-main-toolbar__tools > * {
+  flex-direction: column !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+/* The overflow "..." popover trigger */
+.tldraw-vertical-toolbar .tlui-main-toolbar__overflow {
+  flex-direction: column !important;
+  align-items: center !important;
+}
+
+/* Hide the tldraw watermark */
+.tldraw-vertical-toolbar .tl-watermark_SEE-LICENSE {
+  display: none !important;
+}
