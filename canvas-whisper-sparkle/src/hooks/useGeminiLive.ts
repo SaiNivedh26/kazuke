@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Howl } from "howler";
 import type { AuraState } from "@/components/VoiceAura";
 
 // Tool toggle state matching ToolsDrawer
@@ -71,24 +72,84 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const playbackContextRef = useRef<AudioContext | null>(null);
-  const audioQueueRef = useRef<string[]>([]);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const isPlayingRef = useRef(false);
-  const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const isCapturingRef = useRef(true);
+  const isInitializedRef = useRef(false);
+  const retrievalMusicRef = useRef<Howl | null>(null);
+
+  // Initialize retrieval music
+  useEffect(() => {
+    retrievalMusicRef.current = new Howl({
+      src: ["/retrieval-music.mp3"],
+      loop: true,
+      volume: 0,
+    });
+    return () => {
+      if (retrievalMusicRef.current) {
+        retrievalMusicRef.current.unload();
+      }
+    };
+  }, []);
+
+  // Play retrieval music with fade in
+  const playRetrievalMusic = useCallback(() => {
+    if (retrievalMusicRef.current && !retrievalMusicRef.current.playing()) {
+      retrievalMusicRef.current.play();
+      retrievalMusicRef.current.fade(0, 0.3, 1000);
+    }
+  }, []);
+
+  // Stop retrieval music with fade out
+  const stopRetrievalMusic = useCallback(() => {
+    if (retrievalMusicRef.current && retrievalMusicRef.current.playing()) {
+      const music = retrievalMusicRef.current;
+      music.fade(music.volume(), 0, 1000);
+      setTimeout(() => {
+        if (music.playing()) {
+          music.stop();
+        }
+      }, 1000);
+    }
+  }, []);
+
+  // Initialize audio playback worklet
+  const initPlayback = async () => {
+    if (isInitializedRef.current) return;
+
+    try {
+      // Create audio context at 24kHz to match Gemini
+      playbackContextRef.current = new AudioContext({ sampleRate: 24000 });
+
+      // Load the audio worklet
+      await playbackContextRef.current.audioWorklet.addModule(
+        "/audio-processors/playback.worklet.js"
+      );
+
+      // Create worklet node
+      workletNodeRef.current = new AudioWorkletNode(
+        playbackContextRef.current,
+        "pcm-processor"
+      );
+
+      // Connect to output
+      workletNodeRef.current.connect(playbackContextRef.current.destination);
+
+      isInitializedRef.current = true;
+      console.log("🔊 Audio playback initialized");
+    } catch (err) {
+      console.error("Failed to initialize audio playback:", err);
+    }
+  };
 
   // Stop audio playback immediately
   const stopPlayback = useCallback(() => {
     console.log("🔇 Stopping playback");
-    audioQueueRef.current = [];
     isPlayingRef.current = false;
-    if (currentAudioSourceRef.current) {
-      try {
-        currentAudioSourceRef.current.stop();
-        currentAudioSourceRef.current.disconnect();
-      } catch (e) {
-        // already stopped
-      }
-      currentAudioSourceRef.current = null;
+    
+    // Send interrupt message to worklet
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.postMessage("interrupt");
     }
   }, []);
 
@@ -109,10 +170,12 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
             console.log("✅ Turn complete");
             setAgentState("listening");
             isCapturingRef.current = true;
+            stopRetrievalMusic();
             break;
           case "audio":
             setAgentState("speaking");
             isCapturingRef.current = false;
+            stopRetrievalMusic();
             playAudio(msg.data);
             break;
           case "input_transcription":
@@ -120,20 +183,24 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
             break;
           case "output_transcription":
             setAgentState("speaking");
+            stopRetrievalMusic();
             break;
           case "interrupted":
             console.log("🗣️ Interrupted! Stopping playback");
             stopPlayback();
+            stopRetrievalMusic();
             setAgentState("listening");
             isCapturingRef.current = true;
             break;
           case "tool_call":
             setAgentState("thinking");
             isCapturingRef.current = false;
+            playRetrievalMusic();
             handleToolCall(msg.data);
             break;
           case "error":
             setError(msg.data?.error || "Unknown error");
+            stopRetrievalMusic();
             break;
         }
 
@@ -142,41 +209,26 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     } catch (err) {
       console.error("Error parsing message:", err);
     }
-  }, [onMessage, stopPlayback]);
+  }, [onMessage, stopPlayback, stopRetrievalMusic, playRetrievalMusic]);
 
   // Play audio response
-  const playAudio = useCallback((base64Audio: string) => {
-    audioQueueRef.current.push(base64Audio);
-    
-    if (!isPlayingRef.current) {
-      processAudioQueue();
+  const playAudio = useCallback(async (base64Audio: string) => {
+    // Initialize playback if needed
+    if (!isInitializedRef.current) {
+      await initPlayback();
     }
-  }, []);
 
-  // Process audio queue
-  const processAudioQueue = async () => {
-    if (audioQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
-      currentAudioSourceRef.current = null;
+    if (!playbackContextRef.current || !workletNodeRef.current) {
+      console.error("Playback not initialized");
       return;
     }
 
-    isPlayingRef.current = true;
-    const base64Audio = audioQueueRef.current.shift()!;
+    // Resume context if suspended
+    if (playbackContextRef.current.state === "suspended") {
+      await playbackContextRef.current.resume();
+    }
 
     try {
-      // Initialize playback context if needed
-      if (!playbackContextRef.current || playbackContextRef.current.state === "closed") {
-        playbackContextRef.current = new AudioContext({ sampleRate: 24000 });
-      }
-
-      // Resume context if suspended
-      if (playbackContextRef.current.state === "suspended") {
-        await playbackContextRef.current.resume();
-      }
-
-      const audioContext = playbackContextRef.current;
-      
       // Decode base64 to ArrayBuffer
       const binaryString = atob(base64Audio);
       const bytes = new Uint8Array(binaryString.length);
@@ -191,27 +243,13 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         float32[i] = pcm16[i] / 32768.0;
       }
 
-      // Create audio buffer and play
-      const audioBuffer = audioContext.createBuffer(1, float32.length, 24000);
-      audioBuffer.getChannelData(0).set(float32);
-      
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContext.destination);
-      currentAudioSourceRef.current = source;
-      
-      source.onended = () => {
-        currentAudioSourceRef.current = null;
-        processAudioQueue();
-      };
-      
-      source.start();
+      // Send to worklet
+      workletNodeRef.current.port.postMessage(float32);
+      isPlayingRef.current = true;
     } catch (err) {
       console.error("Error playing audio:", err);
-      currentAudioSourceRef.current = null;
-      processAudioQueue();
     }
-  };
+  }, []);
 
   // Handle tool calls
   const handleToolCall = useCallback(async (toolCall: any) => {
@@ -359,11 +397,21 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const disconnect = useCallback(() => {
     stopAudioCapture();
     stopPlayback();
+    stopRetrievalMusic();
     
+    // Clean up worklet
+    if (workletNodeRef.current) {
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
+    
+    // Clean up playback context
     if (playbackContextRef.current) {
       playbackContextRef.current.close();
       playbackContextRef.current = null;
     }
+    
+    isInitializedRef.current = false;
     
     if (wsRef.current) {
       wsRef.current.close();
@@ -371,7 +419,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     }
     setConnectionState("disconnected");
     setAgentState("connecting");
-  }, [stopPlayback]);
+  }, [stopPlayback, stopRetrievalMusic]);
 
   // Send audio data
   const sendAudio = useCallback((data: ArrayBuffer) => {
