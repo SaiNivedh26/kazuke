@@ -169,26 +169,23 @@ const SECTIONS: {
   },
 ];
 
-export function ToolsDrawer() {
+export function ToolsDrawer({
+  toggles,
+  onToggleChange,
+}: {
+  toggles: Record<string, boolean>;
+  onToggleChange: (id: string, checked: boolean) => void;
+}) {
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
-  const [toggles, setToggles] = useState<Record<string, boolean>>(() => {
-    const initial: Record<string, boolean> = {};
-    for (const section of SECTIONS) {
-      for (const tool of section.tools) {
-        initial[tool.id] = tool.defaultOn;
-      }
-    }
-    return initial;
-  });
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   const isActive = (id: string) => toggles[id] ?? false;
-  const toggle = (id: string) => setToggles((prev) => ({ ...prev, [id]: !prev[id] }));
+  const toggle = (id: string) => onToggleChange(id, !isActive(id));
 
   const trigger = (
     <button

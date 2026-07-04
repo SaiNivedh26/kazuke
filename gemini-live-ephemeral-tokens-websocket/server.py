@@ -22,7 +22,12 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 from notion_mcp_client import notion_client, init_notion, notion_search, notion_create_page, notion_append_to_page, notion_get_page
-from composio_mcp_client import composio_client, init_composio
+from composio_mcp_client import (
+    composio_client, init_composio,
+    slack_send_message, slack_list_channels,
+    gmail_fetch_emails, gmail_send_email,
+    calendar_get_events, calendar_create_event, calendar_delete_event
+)
 
 HTTP_PORT = 8000
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -331,13 +336,54 @@ async def composio_call_endpoint(request):
     """Generic endpoint to call any Composio tool."""
     try:
         data = await request.json()
-        tool_name = data.get("tool_name", "")
+        # Accept both tool_name and tool_slug for compatibility
+        tool_name = data.get("tool_name") or data.get("tool_slug", "")
         arguments = data.get("arguments", {})
 
         if not tool_name:
-            return web.json_response({"error": "tool_name is required"}, status=400)
+            return web.json_response({"error": "tool_name or tool_slug is required"}, status=400)
 
-        result = await composio_client.call_tool(tool_name, arguments)
+        # Convert to lowercase for internal mapping
+        tool_name = tool_name.lower()
+        
+        # Route to appropriate helper function
+        if tool_name == "slack_send_message":
+            channel = arguments.get("channel", "")
+            text = arguments.get("text", "") or arguments.get("markdown_text", "")
+            result = await slack_send_message(channel, text)
+        elif tool_name == "slack_list_channels":
+            result = await slack_list_channels()
+        elif tool_name == "gmail_fetch_emails":
+            query = arguments.get("query")
+            max_results = arguments.get("max_results", 10)
+            result = await gmail_fetch_emails(query, max_results)
+        elif tool_name == "gmail_send_email":
+            to = arguments.get("to", "")
+            subject = arguments.get("subject", "")
+            body = arguments.get("body", "")
+            result = await gmail_send_email(to, subject, body)
+        elif tool_name == "calendar_get_events":
+            time_min = arguments.get("start_datetime")
+            time_max = arguments.get("end_datetime")
+            max_results = arguments.get("max_results", 10)
+            result = await calendar_get_events(time_min, time_max, max_results)
+        elif tool_name == "calendar_create_event":
+            summary = arguments.get("title", "") or arguments.get("summary", "")
+            start_datetime = arguments.get("start_datetime", "")
+            timezone = arguments.get("timezone", "Asia/Kolkata")
+            end_datetime = arguments.get("end_datetime")
+            event_duration_hour = arguments.get("event_duration_hour", 1)
+            event_duration_minutes = arguments.get("event_duration_minutes", 0)
+            description = arguments.get("description")
+            result = await calendar_create_event(summary, start_datetime, timezone, end_datetime, event_duration_hour, event_duration_minutes, description)
+        elif tool_name == "calendar_delete_event":
+            event_id = arguments.get("event_id", "")
+            calendar_id = arguments.get("calendar_id", "primary")
+            result = await calendar_delete_event(event_id, calendar_id)
+        else:
+            # Direct call for unknown tools
+            result = await composio_client.call_tool(tool_name, arguments)
+        
         return web.json_response({"result": result})
 
     except Exception as e:
@@ -397,7 +443,22 @@ async def serve_static_file(request):
 
 async def main():
     """Starts the HTTP server."""
-    app = web.Application()
+    # CORS middleware
+    @web.middleware
+    async def cors_middleware(request, handler):
+        response = await handler(request)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+
+    app = web.Application(middlewares=[cors_middleware])
+
+    # Handle OPTIONS preflight
+    async def options_handler(request):
+        return web.Response(status=200)
+
+    app.router.add_route('OPTIONS', '/{path:.*}', options_handler)
     
     # API endpoints
     app.router.add_post("/api/token", get_ephemeral_token)

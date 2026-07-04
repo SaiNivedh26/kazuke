@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState, useCallback } from "react";
+import { lazy, Suspense, useRef, useState, useCallback, useEffect } from "react";
 import {
   Link2,
   Mic,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { VoiceAura, type AuraState } from "./VoiceAura";
 import { ToolsDrawer } from "./ToolsDrawer";
+import { useGeminiLive, type ToolToggles, type GeminiMessage } from "@/hooks/useGeminiLive";
 import addFilesSvg from "@/assets/add_files.svg";
 import docReadySvg from "@/assets/doc_ready.svg";
 import loadingLottieData from "@/assets/loading_lottie.json";
@@ -41,13 +42,27 @@ const STATE_LABELS: Record<AuraState, string> = {
 };
 
 export function CanvasWorkspace() {
+  const [toolToggles, setToolToggles] = useState<ToolToggles>(() => {
+    const initial: ToolToggles = {};
+    // Default all tools to true
+    const toolIds = [
+      "cognee-remember", "cognee-batch-remember", "cognee-cognify", "cognee-recall", "cognee-forget",
+      "notion-search", "notion-create-page", "notion-append", "notion-get-page",
+      "slack-send", "slack-list", "gmail-fetch", "gmail-send",
+      "calendar-get", "calendar-create", "calendar-delete",
+    ];
+    for (const id of toolIds) {
+      initial[id] = true;
+    }
+    return initial;
+  });
+
   const [status, setStatus] = useState<"success" | "failure">("success");
   const [linkCount, setLinkCount] = useState(2);
   const [muted, setMuted] = useState(true);
   const [cameraOn, setCameraOn] = useState(false);
   const [kbActive, setKbActive] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
-  const [agentState, setAgentState] = useState<AuraState>("connecting");
   const [dragging, setDragging] = useState<string | null>(null);
   const dragRef = useRef<{
     id: string;
@@ -58,6 +73,43 @@ export function CanvasWorkspace() {
   } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Gemini Live hook
+  const {
+    connectionState,
+    agentState: geminiAgentState,
+    connect,
+    disconnect,
+    error,
+  } = useGeminiLive({
+    serverUrl: "http://localhost:8000",
+    toolToggles,
+    systemInstructions: "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone.",
+    onMessage: (msg: GeminiMessage) => {
+      console.log("Gemini message:", msg.type);
+    },
+    onError: (err: Error) => {
+      console.error("Gemini error:", err);
+      setStatus("failure");
+    },
+  });
+
+  // Update status based on connection state
+  useEffect(() => {
+    if (connectionState === "connected") {
+      setStatus("success");
+    } else if (connectionState === "error") {
+      setStatus("failure");
+    }
+  }, [connectionState]);
+
+  // Use Gemini's agent state when connected, otherwise use local state
+  const agentState = connectionState === "connected" ? geminiAgentState : "connecting";
+
+  // Handle toggle updates from ToolsDrawer
+  const handleToggleChange = useCallback((id: string, checked: boolean) => {
+    setToolToggles((prev) => ({ ...prev, [id]: checked }));
+  }, []);
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -106,11 +158,13 @@ export function CanvasWorkspace() {
     setDragging(null);
   };
 
-  const cycleAgentState = () => {
-    setAgentState((prev) => {
-      const idx = AURA_CYCLE.indexOf(prev);
-      return AURA_CYCLE[(idx + 1) % AURA_CYCLE.length];
-    });
+  // Handle mic toggle - connects/disconnects Gemini
+  const handleMicToggle = () => {
+    if (connectionState === "connected") {
+      disconnect();
+    } else {
+      connect();
+    }
   };
 
   const statusDot =
@@ -270,9 +324,8 @@ export function CanvasWorkspace() {
       <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-2xl bg-card/95 backdrop-blur-md border border-border p-2 pl-3 shadow-[0_8px_30px_-8px_rgba(0,0,0,0.2)]">
         <button
           type="button"
-          onClick={cycleAgentState}
           className="relative group"
-          aria-label={`Agent state: ${agentState}. Click to cycle.`}
+          aria-label={`Agent state: ${agentState}`}
           title={STATE_LABELS[agentState]}
         >
           <VoiceAura size={72} color="#1FD5F9" state={agentState} />
@@ -283,13 +336,17 @@ export function CanvasWorkspace() {
 
         <button
           type="button"
-          onClick={() => setMuted((m) => !m)}
+          onClick={handleMicToggle}
           className={`h-12 w-12 rounded-xl grid place-items-center text-white shadow-md active:scale-95 transition-all ${
-            muted ? "bg-red-500 hover:bg-red-600" : "bg-emerald-500 hover:bg-emerald-600"
+            connectionState === "connected"
+              ? "bg-emerald-500 hover:bg-emerald-600"
+              : connectionState === "connecting"
+              ? "bg-yellow-500 hover:bg-yellow-600"
+              : "bg-red-500 hover:bg-red-600"
           }`}
-          aria-label={muted ? "Unmute microphone" : "Mute microphone"}
+          aria-label={connectionState === "connected" ? "Disconnect" : "Connect"}
         >
-          {muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          {connectionState === "connected" ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
         </button>
 
         <div className="h-8 w-px bg-border" />
@@ -336,7 +393,7 @@ export function CanvasWorkspace() {
           )}
         </button>
 
-        <ToolsDrawer />
+        <ToolsDrawer toggles={toolToggles} onToggleChange={handleToggleChange} />
 
         <input
           ref={fileInputRef}
