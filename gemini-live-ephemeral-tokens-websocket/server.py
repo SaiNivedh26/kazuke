@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
+from notion_mcp_client import notion_client, init_notion, notion_search, notion_create_page, notion_append_to_page, notion_get_page
+
 HTTP_PORT = 8000
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -238,6 +240,91 @@ async def cognee_cognify(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def notion_search_endpoint(request):
+    """Search Notion pages and databases."""
+    try:
+        data = await request.json()
+        query = data.get("query", "")
+
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+
+        result = await notion_search(query)
+        return web.json_response({"result": result})
+
+    except Exception as e:
+        print(f"Notion search error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def notion_create_page_endpoint(request):
+    """Create a new page in Notion."""
+    try:
+        data = await request.json()
+        title = data.get("title", "")
+        content = data.get("content", "")
+        parent_id = data.get("parent_id")
+
+        if not title or not content:
+            return web.json_response({"error": "title and content are required"}, status=400)
+
+        result = await notion_create_page(title, content, parent_id)
+        return web.json_response({"result": result})
+
+    except Exception as e:
+        print(f"Notion create page error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def notion_append_endpoint(request):
+    """Append content to an existing Notion page."""
+    try:
+        data = await request.json()
+        page_id = data.get("page_id", "")
+        content = data.get("content", "")
+
+        if not page_id or not content:
+            return web.json_response({"error": "page_id and content are required"}, status=400)
+
+        result = await notion_append_to_page(page_id, content)
+        return web.json_response({"result": result})
+
+    except Exception as e:
+        print(f"Notion append error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def notion_get_page_endpoint(request):
+    """Get content from a Notion page."""
+    try:
+        data = await request.json()
+        page_id = data.get("page_id", "")
+
+        if not page_id:
+            return web.json_response({"error": "page_id is required"}, status=400)
+
+        result = await notion_get_page(page_id)
+        return web.json_response({"result": result})
+
+    except Exception as e:
+        print(f"Notion get page error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def notion_list_tools_endpoint(request):
+    """List available Notion MCP tools."""
+    try:
+        if not notion_client.session:
+            return web.json_response({"error": "Notion MCP client not connected"}, status=500)
+
+        tools = [{"name": t.name, "description": t.description} for t in notion_client.tools]
+        return web.json_response({"tools": tools})
+
+    except Exception as e:
+        print(f"Notion list tools error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def serve_static_file(request):
     """Serve static files from the frontend directory."""
     path = request.match_info.get("path", "index.html")
@@ -285,6 +372,20 @@ async def main():
     app.router.add_post("/api/cognee/cognify", cognee_cognify)
     app.router.add_post("/api/cognee/recall", cognee_recall)
     app.router.add_post("/api/cognee/forget", cognee_forget)
+
+    # Notion MCP endpoints
+    app.router.add_post("/api/notion/search", notion_search_endpoint)
+    app.router.add_post("/api/notion/create_page", notion_create_page_endpoint)
+    app.router.add_post("/api/notion/append", notion_append_endpoint)
+    app.router.add_post("/api/notion/get_page", notion_get_page_endpoint)
+    app.router.add_get("/api/notion/tools", notion_list_tools_endpoint)
+
+    # Initialize Notion MCP client
+    notion_ok = await init_notion()
+    if notion_ok:
+        print("  ✅ Notion MCP connected")
+    else:
+        print("  ⚠️  Notion MCP not available (set NOTION_ACCESS_TOKEN)")
     
     # Static files
     app.router.add_get("/", serve_static_file)

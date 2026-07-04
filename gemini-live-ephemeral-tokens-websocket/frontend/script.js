@@ -29,6 +29,10 @@ function initDOM() {
     "enableCogneeCognify",
     "enableCogneeRecall",
     "enableCogneeForget",
+    "enableNotionSearch",
+    "enableNotionCreatePage",
+    "enableNotionAppend",
+    "enableNotionGetPage",
     "voiceSelect",
     "temperature",
     "temperatureValue",
@@ -198,6 +202,28 @@ async function connect() {
         const cogneeForget = new CogneeForgetTool();
         state.client.addFunction(cogneeForget);
         console.log("✅ Cognee forget tool enabled");
+      }
+
+      // Notion MCP tools
+      if (elements.enableNotionSearch && elements.enableNotionSearch.checked) {
+        const notionSearch = new NotionSearchTool();
+        state.client.addFunction(notionSearch);
+        console.log("✅ Notion search tool enabled");
+      }
+      if (elements.enableNotionCreatePage && elements.enableNotionCreatePage.checked) {
+        const notionCreatePage = new NotionCreatePageTool();
+        state.client.addFunction(notionCreatePage);
+        console.log("✅ Notion create page tool enabled");
+      }
+      if (elements.enableNotionAppend && elements.enableNotionAppend.checked) {
+        const notionAppend = new NotionAppendTool();
+        state.client.addFunction(notionAppend);
+        console.log("✅ Notion append tool enabled");
+      }
+      if (elements.enableNotionGetPage && elements.enableNotionGetPage.checked) {
+        const notionGetPage = new NotionGetPageTool();
+        state.client.addFunction(notionGetPage);
+        console.log("✅ Notion get page tool enabled");
       }
     } else {
       console.log(

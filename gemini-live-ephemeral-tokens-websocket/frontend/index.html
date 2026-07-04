@@ -106,12 +106,18 @@ RESPONSE STYLE:
 - If memory doesn't have the answer, just say "I don't have that in my memory" - don't guess or hallucinate
 - Be concise and direct
 
+TOOL PRIORITY:
+1. Cognee memory is PRIMARY - use it for facts, observations, relationships, tasks, preferences
+2. Notion is SECONDARY - only use when user explicitly says "save to Notion", "add to Notion", "retrieve from Notion", etc.
+3. Never use Notion search for general questions - always try cognee_recall first
+
 KEY BEHAVIOR:
 - Current session: You already remember everything from THIS conversation. Answer directly from context.
 - Past sessions: Use cognee_recall to search the shared knowledge graph for info from PREVIOUS sessions.
+- Notion: ONLY use Notion tools when user explicitly asks to save/retrieve from Notion. Do NOT use Notion for general questions.
 
 MEMORY RULES - ALWAYS STORE THESE WITH DATE CONTEXT:
-1. When user states facts (preferences, objects, relationships, locations): call cognee_remember immediately
+1. When user states facts (preferences, objects, relationships, locations, tasks): call cognee_remember immediately
 2. When you observe something visually via camera (objects, people, environment, actions): call cognee_remember to store what you saw
 3. When you describe something you see/hear: ALWAYS call cognee_remember with your observation
 4. Include the current date in every memory you store for temporal context
@@ -119,7 +125,7 @@ MEMORY RULES - ALWAYS STORE THESE WITH DATE CONTEXT:
 Examples of what to store:
 - "On 2025-01-08: The user is wearing a blue shirt"
 - "On 2025-01-08: There is a framed picture on the wall above the user"
-- "On 2025-01-08: The user is holding scissors, about to trim their hair"
+- "On 2025-01-08: The user's tasks for today are: finish report, call client, review PRs"
 
 When storing related observations from the same conversation, use cognee_remember_batch to group them together with the same date prefix.
 
@@ -129,6 +135,18 @@ Memory tools:
 - cognee_cognify: Trigger graph rebuild (only needed if you just stored and need immediate recall)
 - cognee_recall: Search the shared knowledge graph (cross-session memory)
 - cognee_forget: Clear ALL memories
+
+Notion tools (ONLY use when user explicitly asks):
+- notion_search: Search for existing pages in Notion workspace
+- notion_create_page: Create a new page (returns page ID)
+- notion_append_to_page: Add content to an existing page (needs page ID)
+- notion_get_page: Read page content as markdown (needs page ID)
+
+WORKFLOW: When user explicitly asks to save to Notion:
+1. First use notion_search to find if the page already exists
+2. If found, use notion_append_to_page with the page ID
+3. If not found, use notion_create_page to create it
+4. Store the page ID in memory for future reference
 
 IMPORTANT: Don't call cognee_recall for things the user just told you in this session - you already know those!</textarea>
           </div>
@@ -208,6 +226,33 @@ IMPORTANT: Don't call cognee_recall for things the user just told you in this se
             <input type="checkbox" id="enableCogneeForget" checked />
             <label for="enableCogneeForget">Forget</label>
             <span> (Remove memories) </span>
+          </div>
+
+          <hr style="margin: 10px 0;" />
+          <div><strong>Notion MCP Tools:</strong></div>
+
+          <div>
+            <input type="checkbox" id="enableNotionSearch" checked />
+            <label for="enableNotionSearch">Search</label>
+            <span> (Search Notion workspace) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableNotionCreatePage" checked />
+            <label for="enableNotionCreatePage">Create Page</label>
+            <span> (Create new Notion page) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableNotionAppend" checked />
+            <label for="enableNotionAppend">Append to Page</label>
+            <span> (Add content to existing page) </span>
+          </div>
+
+          <div>
+            <input type="checkbox" id="enableNotionGetPage" checked />
+            <label for="enableNotionGetPage">Get Page</label>
+            <span> (Read Notion page content) </span>
           </div>
         </details>
 

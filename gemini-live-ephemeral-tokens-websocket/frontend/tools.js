@@ -312,3 +312,208 @@ class CogneeForgetTool extends FunctionCallDefinition {
     }
   }
 }
+
+/**
+ * Notion Search Tool
+ * Searches Notion pages and databases
+ */
+class NotionSearchTool extends FunctionCallDefinition {
+  constructor() {
+    super(
+      "notion_search",
+      "Searches Notion for pages and databases matching a query. Returns pages with their IDs, titles, and metadata. Use this to find existing pages before creating new ones.",
+      {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The search query to match against page titles"
+          }
+        }
+      },
+      ["query"]
+    );
+  }
+
+  async functionToCall(parameters) {
+    const query = parameters.query;
+    if (!query) return { error: "No query provided" };
+
+    try {
+      const response = await fetch("/api/notion/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: query })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return { error: result.error || "Search failed" };
+      }
+
+      console.log(`🔍 Notion search: "${query}"`);
+      return { result: result.result };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+}
+
+/**
+ * Notion Create Page Tool
+ * Creates a new page in Notion
+ */
+class NotionCreatePageTool extends FunctionCallDefinition {
+  constructor() {
+    super(
+      "notion_create_page",
+      "Creates a new page in Notion with a title and content. Optionally specify a parent_id to create it under an existing page. Returns the new page ID.",
+      {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "The title of the new page"
+          },
+          content: {
+            type: "string",
+            description: "The content/body of the page (plain text or markdown)"
+          },
+          parent_id: {
+            type: "string",
+            description: "Optional: ID of parent page to create under (if not provided, creates at workspace root)"
+          }
+        }
+      },
+      ["title", "content"]
+    );
+  }
+
+  async functionToCall(parameters) {
+    const { title, content, parent_id } = parameters;
+    if (!title || !content) return { error: "Title and content are required" };
+
+    try {
+      const body = { title, content };
+      if (parent_id) body.parent_id = parent_id;
+
+      const response = await fetch("/api/notion/create_page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return { error: result.error || "Create page failed" };
+      }
+
+      console.log(`📝 Notion page created: "${title}"`);
+      addMessage(`[Notion page created: "${title}"]`, "system");
+      return { result: result.result };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+}
+
+/**
+ * Notion Append Tool
+ * Appends content to an existing Notion page
+ */
+class NotionAppendTool extends FunctionCallDefinition {
+  constructor() {
+    super(
+      "notion_append_to_page",
+      "Appends content to an existing Notion page. Use the page ID from search results or from creating a page.",
+      {
+        type: "object",
+        properties: {
+          page_id: {
+            type: "string",
+            description: "The ID of the Notion page to append to"
+          },
+          content: {
+            type: "string",
+            description: "The content to append (plain text or markdown)"
+          }
+        }
+      },
+      ["page_id", "content"]
+    );
+  }
+
+  async functionToCall(parameters) {
+    const { page_id, content } = parameters;
+    if (!page_id || !content) return { error: "page_id and content are required" };
+
+    try {
+      const response = await fetch("/api/notion/append", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_id, content })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return { error: result.error || "Append failed" };
+      }
+
+      console.log(`📝 Appended to Notion page: ${page_id}`);
+      addMessage(`[Content added to Notion page]`, "system");
+      return { result: result.result };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+}
+
+/**
+ * Notion Get Page Tool
+ * Gets content from a specific Notion page as markdown
+ */
+class NotionGetPageTool extends FunctionCallDefinition {
+  constructor() {
+    super(
+      "notion_get_page",
+      "Retrieves the content of a specific Notion page as markdown. Use with a page ID from search results.",
+      {
+        type: "object",
+        properties: {
+          page_id: {
+            type: "string",
+            description: "The ID of the Notion page to retrieve"
+          }
+        }
+      },
+      ["page_id"]
+    );
+  }
+
+  async functionToCall(parameters) {
+    const page_id = parameters.page_id;
+    if (!page_id) return { error: "No page_id provided" };
+
+    try {
+      const response = await fetch("/api/notion/get_page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_id })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return { error: result.error || "Get page failed" };
+      }
+
+      console.log(`📄 Notion page retrieved: ${page_id}`);
+      return { result: result.result };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+}
