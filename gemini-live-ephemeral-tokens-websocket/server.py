@@ -1454,6 +1454,63 @@ async def canvas_sync_endpoint(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def canvas_add_text_file_endpoint(request):
+    """Add a text file to the canvas with retrieved content."""
+    try:
+        data = await request.json()
+        content = data.get("content", "")
+        title = data.get("title", "Retrieved Content")
+        
+        if not content:
+            return web.json_response({"error": "content is required"}, status=400)
+        
+        # Create a unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{title.replace(' ', '_')}_{timestamp}.txt"
+        
+        # Upload to Google Drive
+        composio_args = {
+            "tool_slug": "gdrive_create_file_from_text",
+            "arguments": {
+                "file_name": filename,
+                "text_content": content,
+                "mime_type": "text/plain"
+            }
+        }
+        
+        result = await composio_client.call_tool(**composio_args)
+        
+        # Extract file metadata
+        file_data = json.loads(result) if isinstance(result, str) else result
+        file_id = None
+        file_url = None
+        
+        if isinstance(file_data, dict):
+            if "results" in file_data:
+                results = file_data["results"]
+                if results and len(results) > 0:
+                    resp_data = results[0].get("response", {}).get("data", {})
+                    file_id = resp_data.get("id")
+                    file_url = resp_data.get("webViewLink") or resp_data.get("display_url")
+        
+        # Return canvas item data
+        canvas_item = {
+            "id": f"canvas-{timestamp}",
+            "type": "text-file",
+            "fileName": filename,
+            "fileId": file_id,
+            "webViewLink": file_url,
+            "content": content,
+            "source": "retrieval"
+        }
+        
+        return web.json_response({"canvas_item": canvas_item})
+        
+    except Exception as e:
+        print(f"Canvas add text file error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def canvas_list_files_endpoint(request):
     """Agent tool: list all files currently on canvas."""
     try:
@@ -1631,6 +1688,7 @@ async def main():
 
     # Canvas agent tool endpoints
     app.router.add_post("/api/canvas/sync", canvas_sync_endpoint)
+    app.router.add_post("/api/canvas/add-text-file", canvas_add_text_file_endpoint)
     app.router.add_get("/api/canvas/files", canvas_list_files_endpoint)
     app.router.add_post("/api/canvas/group", canvas_group_files_endpoint)
 
