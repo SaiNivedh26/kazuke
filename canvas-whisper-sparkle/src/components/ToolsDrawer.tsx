@@ -219,6 +219,12 @@ const SECTIONS: {
         description: "Group files into a named context, persisted to Cognee",
         defaultOn: true,
       },
+      {
+        id: "canvas-add-text-file",
+        label: "Add Retrieved Content as Text File",
+        description: "Add recalled content to canvas as editable text file",
+        defaultOn: true,
+      },
     ],
   },
   {

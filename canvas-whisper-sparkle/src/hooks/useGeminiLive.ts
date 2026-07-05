@@ -268,6 +268,23 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
           if (name === "gdrive_fetch_to_canvas") {
             onMessage?.({ type: "tool_result", data: { name, args, result } });
           }
+          
+          // Automatically store tool call results in Cognee memory
+          if (toggles["cognee-remember"] && result && !result.error) {
+            const timestamp = new Date().toISOString();
+            const memoryText = `[${timestamp}] Tool: ${name}\nArguments: ${JSON.stringify(args)}\nResult: ${JSON.stringify(result)}`;
+            
+            try {
+              await fetch(`${serverUrl}/api/cognee/remember`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: memoryText }),
+              });
+              console.log(`💾 Stored ${name} result in Cognee`);
+            } catch (memErr) {
+              console.warn(`Failed to store ${name} in Cognee:`, memErr);
+            }
+          }
         } catch (err) {
           console.error(`Tool ${name} failed:`, err);
           functionResponses.push({
@@ -659,6 +676,7 @@ async function executeTool(
     gdrive_fetch_to_canvas: { endpoint: "/api/composio/call", enabled: "gdrive-fetch-to-canvas" },
     canvas_list_files: { endpoint: "/api/canvas/files", enabled: "canvas-list-files" },
     canvas_group_files: { endpoint: "/api/canvas/group", enabled: "canvas-group-files" },
+    canvas_add_text_file: { endpoint: "/api/canvas/add-text-file", enabled: "canvas-add-text-file" },
   };
 
   const tool = toolMap[name];
@@ -696,6 +714,16 @@ async function executeTool(
     return response.json();
   }
   if (name === "canvas_group_files") {
+    const response = await fetch(`${serverUrl}${tool.endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const result = await response.json();
+    onMessage?.({ type: "tool_result", data: { name, args, result } });
+    return result;
+  }
+  if (name === "canvas_add_text_file") {
     const response = await fetch(`${serverUrl}${tool.endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1116,6 +1144,28 @@ function getEnabledTools(toggles: ToolToggles): any[] {
           },
         },
         required: ["file_ids"],
+      },
+    });
+  }
+
+  if (toggles["canvas-add-text-file"]) {
+    functionDeclarations.push({
+      name: "canvas_add_text_file",
+      description:
+        "Add a text file to the canvas with retrieved content. Use this after retrieving information from Cognee to make the content visible and editable on the canvas. The file will be uploaded to Google Drive and displayed on the canvas.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description: "The text content to include in the file",
+          },
+          title: {
+            type: "string",
+            description: "A title for the file (will be used in the filename)",
+          },
+        },
+        required: ["content"],
       },
     });
   }

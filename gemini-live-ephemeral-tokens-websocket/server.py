@@ -800,6 +800,51 @@ async def composio_call_endpoint(request):
             # Direct call for unknown tools
             result = await composio_client.call_tool(tool_name, arguments)
         
+        # Auto-store tool call results in Cognee for later recall
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # Create a human-readable summary with full content based on tool type
+            if tool_name == "slack_send_message":
+                channel = arguments.get("channel", "")
+                text = arguments.get("text", "") or arguments.get("markdown_text", "")
+                # Extract message ID from result if available
+                msg_ref = ""
+                try:
+                    result_data = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(result_data, dict) and "results" in result_data:
+                        msg_data = result_data["results"][0].get("response", {}).get("data", {})
+                        msg_ref = f"\nMessage ID: {msg_data.get('message', {}).get('ts', 'N/A')}"
+                except:
+                    pass
+                memory_text = f"On {date_str} at {timestamp}: Sent Slack message to channel '{channel}'\n\nFull message content:\n{text}{msg_ref}"
+            elif tool_name == "gmail_send_email":
+                to = arguments.get("to", "")
+                subject = arguments.get("subject", "")
+                body = arguments.get("body", "")
+                memory_text = f"On {date_str} at {timestamp}: Sent email\n\nTo: {to}\nSubject: {subject}\n\nFull email body:\n{body}"
+            elif tool_name == "calendar_create_event":
+                summary = arguments.get("title", "") or arguments.get("summary", "")
+                start = arguments.get("start_datetime", "")
+                end = arguments.get("end_datetime", "")
+                desc = arguments.get("description", "")
+                memory_text = f"On {date_str} at {timestamp}: Created calendar event\n\nEvent: {summary}\nStart: {start}\nEnd: {end}\nDescription: {desc}"
+            elif tool_name == "notion_create_page":
+                title = arguments.get("title", "")
+                content = arguments.get("content", "")
+                parent_id = arguments.get("parent_id", "")
+                memory_text = f"On {date_str} at {timestamp}: Created Notion page\n\nTitle: {title}\nParent ID: {parent_id}\n\nFull page content:\n{content}"
+            else:
+                # Generic format for other tools - include full result
+                memory_text = f"On {date_str} at {timestamp}: Executed tool '{tool_name}'\n\nArguments:\n{json.dumps(arguments, indent=2)}\n\nFull Result:\n{json.dumps(result, indent=2)}"
+            
+            store_in_background([memory_text])
+            print(f"[Auto-Store] Stored {tool_name} result in Cognee: {memory_text[:100]}...")
+        except Exception as store_err:
+            print(f"[Auto-Store] Failed to store {tool_name}: {store_err}")
+        
         return web.json_response({"result": result})
 
     except Exception as e:
@@ -1409,6 +1454,63 @@ async def canvas_sync_endpoint(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def canvas_add_text_file_endpoint(request):
+    """Add a text file to the canvas with retrieved content."""
+    try:
+        data = await request.json()
+        content = data.get("content", "")
+        title = data.get("title", "Retrieved Content")
+        
+        if not content:
+            return web.json_response({"error": "content is required"}, status=400)
+        
+        # Create a unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{title.replace(' ', '_')}_{timestamp}.txt"
+        
+        # Upload to Google Drive
+        composio_args = {
+            "tool_slug": "gdrive_create_file_from_text",
+            "arguments": {
+                "file_name": filename,
+                "text_content": content,
+                "mime_type": "text/plain"
+            }
+        }
+        
+        result = await composio_client.call_tool(**composio_args)
+        
+        # Extract file metadata
+        file_data = json.loads(result) if isinstance(result, str) else result
+        file_id = None
+        file_url = None
+        
+        if isinstance(file_data, dict):
+            if "results" in file_data:
+                results = file_data["results"]
+                if results and len(results) > 0:
+                    resp_data = results[0].get("response", {}).get("data", {})
+                    file_id = resp_data.get("id")
+                    file_url = resp_data.get("webViewLink") or resp_data.get("display_url")
+        
+        # Return canvas item data
+        canvas_item = {
+            "id": f"canvas-{timestamp}",
+            "type": "text-file",
+            "fileName": filename,
+            "fileId": file_id,
+            "webViewLink": file_url,
+            "content": content,
+            "source": "retrieval"
+        }
+        
+        return web.json_response({"canvas_item": canvas_item})
+        
+    except Exception as e:
+        print(f"Canvas add text file error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def canvas_list_files_endpoint(request):
     """Agent tool: list all files currently on canvas."""
     try:
@@ -1586,6 +1688,7 @@ async def main():
 
     # Canvas agent tool endpoints
     app.router.add_post("/api/canvas/sync", canvas_sync_endpoint)
+    app.router.add_post("/api/canvas/add-text-file", canvas_add_text_file_endpoint)
     app.router.add_get("/api/canvas/files", canvas_list_files_endpoint)
     app.router.add_post("/api/canvas/group", canvas_group_files_endpoint)
 

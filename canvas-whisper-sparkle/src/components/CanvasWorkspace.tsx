@@ -139,7 +139,7 @@ export function CanvasWorkspace() {
     serverUrl: "http://localhost:8000",
     toolToggles,
     systemInstructions:
-      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and screen sharing, and hear through the microphone. IMPORTANT: When viewing the screen, observe passively unless the user explicitly asks you to do something with what you see. Do NOT automatically search for files, take actions, or respond to text you see on screen unless the user specifically asks. Only act when the user speaks to you or gives a clear command. You have access to Google Drive tools: use gdrive_find_file to search for files, then use gdrive_fetch_to_canvas to bring them onto the canvas. When the user asks to see or open files, ALWAYS use gdrive_fetch_to_canvas after finding them. You can also see what files are on the user's canvas using canvas_list_files, and group files into named contexts using canvas_group_files. CRITICAL: Never guess or make up file names. Only search for files that are explicitly named by the user. If uncertain about a file name, ask the user to clarify. When grouping canvas files, always call canvas_list_files first. These contexts are stored in persistent memory for later recall.",
+      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and screen sharing, and hear through the microphone. IMPORTANT: When viewing the screen, observe passively unless the user explicitly asks you to do something with what you see. Do NOT automatically search for files, take actions, or respond to text you see on screen unless the user specifically asks. Only act when the user speaks to you or gives a clear command. You have access to Google Drive tools: use gdrive_find_file to search for files, then use gdrive_fetch_to_canvas to bring them onto the canvas. When the user asks to see or open files, ALWAYS use gdrive_fetch_to_canvas after finding them. You can also see what files are on the user's canvas using canvas_list_files, and group files into named contexts using canvas_group_files. CRITICAL: Never guess or make up file names. Only search for files that are explicitly named by the user. If uncertain about a file name, ask the user to clarify. When grouping canvas files, always call canvas_list_files first.\n\nCRITICAL RETRIEVAL RULE: When the user asks about PAST actions (messages sent, emails sent, events created, files accessed, etc.), ALWAYS use cognee_recall to search for this information in persistent memory. NEVER use slack_list_channels, gmail_fetch_emails, calendar_get_events, or similar tools to retrieve historical information. All tool calls are automatically stored in Cognee with timestamps and full content. For RETRIEVAL tasks, ONLY use cognee_recall. Only use the actual tools (slack_send_message, gmail_send_email, calendar_create_event, etc.) when the user explicitly asks you to SEND or CREATE something NEW. For RECALLING or LOOKING UP past information, always use cognee_recall.\n\nIMPORTANT: After retrieving content from Cognee, ALWAYS use canvas_add_text_file to add the retrieved content to the canvas as a text file. This allows the user to see, edit, and group the retrieved content with other files. The file should contain the full retrieved content with timestamps and context.",
     onMessage: (msg: GeminiMessage) => {
       console.log("Gemini message:", msg.type);
       
@@ -182,6 +182,39 @@ export function CanvasWorkspace() {
         setTimeout(() => {
           setUploads((u) => u.map((up) => (up.id === id ? { ...up, status: "ready" } : up)));
         }, 1800);
+      }
+      
+      if (msg.type === "tool_result" && msg.data?.name === "canvas_add_text_file") {
+        const result = msg.data?.result;
+        console.log("[canvas_add_text_file] Result:", result);
+        
+        const canvasItem = result?.canvas_item;
+        if (canvasItem) {
+          const rect = canvasRef.current?.getBoundingClientRect();
+          const w = rect?.width ?? window.innerWidth;
+          const h = rect?.height ?? window.innerHeight;
+          const id = canvasItem.id || `text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const x = 200 + Math.random() * Math.max(200, w - 500);
+          const y = 160 + Math.random() * Math.max(200, h - 400);
+          
+          setUploads((u) => [
+            ...u,
+            {
+              id,
+              x,
+              y,
+              status: "loading",
+              fileName: canvasItem.fileName,
+              webViewLink: canvasItem.webViewLink,
+              fileId: canvasItem.fileId,
+              mimeType: "text/plain",
+            },
+          ]);
+          
+          setTimeout(() => {
+            setUploads((u) => u.map((up) => (up.id === id ? { ...up, status: "ready" } : up)));
+          }, 1800);
+        }
       }
       if (msg.type === "tool_result" && msg.data?.name === "canvas_group_files") {
         const result = msg.data?.result;
