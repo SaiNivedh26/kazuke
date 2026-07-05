@@ -5,11 +5,13 @@ Uses Cognee HTTP API for memory management with persistent storage.
 """
 
 import asyncio
+import base64
 import json
 import mimetypes
 import os
 import datetime
 import threading
+import time
 import requests
 
 from aiohttp import web
@@ -22,7 +24,15 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 from notion_mcp_client import notion_client, init_notion, notion_search, notion_create_page, notion_append_to_page, notion_get_page
-from composio_mcp_client import composio_client, init_composio
+from composio_mcp_client import (
+    composio_client, init_composio,
+    slack_send_message, slack_list_channels,
+    gmail_fetch_emails, gmail_send_email,
+    calendar_get_events, calendar_create_event, calendar_delete_event,
+    gdrive_find_file, gdrive_get_file_metadata, gdrive_download_file,
+    gdrive_create_file, gdrive_create_file_from_text, gdrive_create_folder,
+    gdrive_upload_binary, gdrive_get_about, gdrive_set_sharing_public,
+)
 
 HTTP_PORT = 8000
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -45,24 +55,35 @@ def get_cognee_headers():
 def _background_store(texts):
     """Runs in a background thread: add_text + cognify to shared dataset."""
     try:
+        from datetime import datetime
+        
         headers = get_cognee_headers()
+        
+        # Add timestamp to each text
+        timestamped_texts = []
+        created_at = datetime.now().isoformat()
+        for text in texts:
+            timestamped_texts.append(f"{text} [Created: {created_at}]")
+        
+        print(f"[BG] Storing {len(timestamped_texts)} items at {created_at}")
+        
         add_resp = requests.post(
             f"{COGNEE_BASE_URL}/api/v1/add_text",
-            json={"textData": texts, "datasetName": PERSISTENT_DATASET},
+            json={"textData": timestamped_texts, "datasetName": PERSISTENT_DATASET},
             headers=headers,
             timeout=30
         )
         if add_resp.status_code not in [200, 201]:
-            print(f"[BG] add_text failed: {add_resp.status_code}")
+            print(f"[BG] add_text failed: {add_resp.status_code} - {add_resp.text[:200]}")
             return
 
-        requests.post(
+        cognify_resp = requests.post(
             f"{COGNEE_BASE_URL}/api/v1/cognify",
             json={"datasets": [PERSISTENT_DATASET]},
             headers=headers,
             timeout=90
         )
-        print(f"[BG] Stored {len(texts)} items, cognify done")
+        print(f"[BG] Stored {len(timestamped_texts)} items, cognify status: {cognify_resp.status_code}")
     except Exception as e:
         print(f"[BG] Store failed: {e}")
 
@@ -70,6 +91,64 @@ def store_in_background(texts):
     """Fire-and-forget: stores to shared dataset in background thread."""
     t = threading.Thread(target=_background_store, args=(texts,), daemon=True)
     t.start()
+
+
+def resolve_dataset_id(dataset_name):
+    """Resolve a dataset name to its UUID via the Cognee datasets listing."""
+    try:
+        headers = get_cognee_headers()
+        resp = requests.get(
+            f"{COGNEE_BASE_URL}/api/v1/datasets/",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        for ds in resp.json():
+            if ds.get("name") == dataset_name:
+                return ds.get("id")
+    except Exception as e:
+        print(f"resolve_dataset_id error: {e}")
+    return None
+
+
+async def cognee_visualize(request):
+    """Proxies the Cognee graph visualization HTML for the shared dataset."""
+    try:
+        dataset_id = request.query.get("dataset_id")
+        if not dataset_id:
+            dataset_id = resolve_dataset_id(PERSISTENT_DATASET)
+        if not dataset_id:
+            return web.json_response(
+                {"error": "Could not resolve dataset_id for visualization"},
+                status=404,
+            )
+
+        headers = get_cognee_headers()
+        viz_resp = requests.get(
+            f"{COGNEE_BASE_URL}/api/v1/visualize",
+            params={"dataset_id": dataset_id},
+            headers=headers,
+            timeout=60,
+        )
+
+        if viz_resp.status_code != 200:
+            return web.json_response(
+                {
+                    "error": f"Visualize failed: {viz_resp.status_code}",
+                    "details": viz_resp.text,
+                },
+                status=502,
+            )
+
+        return web.Response(
+            body=viz_resp.content,
+            content_type="text/html",
+            charset="utf-8",
+        )
+    except Exception as e:
+        print(f"Cognee visualize error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 # Initialize the Gemini GenAI client
 if not GEMINI_API_KEY:
@@ -331,13 +410,104 @@ async def composio_call_endpoint(request):
     """Generic endpoint to call any Composio tool."""
     try:
         data = await request.json()
-        tool_name = data.get("tool_name", "")
+        # Accept both tool_name and tool_slug for compatibility
+        tool_name = data.get("tool_name") or data.get("tool_slug", "")
         arguments = data.get("arguments", {})
 
         if not tool_name:
-            return web.json_response({"error": "tool_name is required"}, status=400)
+            return web.json_response({"error": "tool_name or tool_slug is required"}, status=400)
 
-        result = await composio_client.call_tool(tool_name, arguments)
+        # Convert to lowercase for internal mapping
+        tool_name = tool_name.lower()
+        
+        # Route to appropriate helper function
+        if tool_name == "slack_send_message":
+            channel = arguments.get("channel", "")
+            text = arguments.get("text", "") or arguments.get("markdown_text", "")
+            result = await slack_send_message(channel, text)
+        elif tool_name == "slack_list_channels":
+            result = await slack_list_channels()
+        elif tool_name == "gmail_fetch_emails":
+            query = arguments.get("query")
+            max_results = arguments.get("max_results", 10)
+            result = await gmail_fetch_emails(query, max_results)
+        elif tool_name == "gmail_send_email":
+            to = arguments.get("to", "")
+            subject = arguments.get("subject", "")
+            body = arguments.get("body", "")
+            result = await gmail_send_email(to, subject, body)
+        elif tool_name == "calendar_get_events":
+            time_min = arguments.get("start_datetime")
+            time_max = arguments.get("end_datetime")
+            max_results = arguments.get("max_results", 10)
+            result = await calendar_get_events(time_min, time_max, max_results)
+        elif tool_name == "calendar_create_event":
+            summary = arguments.get("title", "") or arguments.get("summary", "")
+            start_datetime = arguments.get("start_datetime", "")
+            timezone = arguments.get("timezone", "Asia/Kolkata")
+            end_datetime = arguments.get("end_datetime")
+            event_duration_hour = arguments.get("event_duration_hour", 1)
+            event_duration_minutes = arguments.get("event_duration_minutes", 0)
+            description = arguments.get("description")
+            result = await calendar_create_event(summary, start_datetime, timezone, end_datetime, event_duration_hour, event_duration_minutes, description)
+        elif tool_name == "calendar_delete_event":
+            event_id = arguments.get("event_id", "")
+            calendar_id = arguments.get("calendar_id", "primary")
+            result = await calendar_delete_event(event_id, calendar_id)
+        elif tool_name == "gdrive_find_file":
+            query = arguments.get("query", "")
+            max_results = arguments.get("max_results", 10)
+            result = await gdrive_find_file(query, max_results)
+        elif tool_name == "gdrive_get_file_metadata":
+            file_id = arguments.get("file_id", "")
+            result = await gdrive_get_file_metadata(file_id)
+        elif tool_name == "gdrive_download_file":
+            file_id = arguments.get("file_id", "")
+            mime_type = arguments.get("mime_type")
+            result = await gdrive_download_file(file_id, mime_type)
+        elif tool_name == "gdrive_create_file_from_text":
+            file_name = arguments.get("file_name", "") or arguments.get("name", "")
+            text_content = arguments.get("text_content", "") or arguments.get("content", "")
+            mime_type = arguments.get("mime_type", "text/plain")
+            parent_id = arguments.get("parent_id")
+            result = await gdrive_create_file_from_text(file_name, text_content, mime_type, parent_id)
+        elif tool_name == "gdrive_create_folder":
+            name = arguments.get("name", "")
+            parent_id = arguments.get("parent_id")
+            result = await gdrive_create_folder(name, parent_id)
+        elif tool_name == "gdrive_get_about":
+            result = await gdrive_get_about()
+        elif tool_name == "gdrive_fetch_to_canvas":
+            file_id = arguments.get("file_id", "")
+            if file_id:
+                try:
+                    await gdrive_set_sharing_public(file_id)
+                except Exception as perm_err:
+                    print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+            meta_json = await gdrive_get_file_metadata(file_id)
+            print(f"[gdrive_fetch_to_canvas] Raw metadata response: {str(meta_json)[:500]}")
+            try:
+                meta_data = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
+                print(f"[gdrive_fetch_to_canvas] Parsed meta_data type: {type(meta_data).__name__}")
+                
+                # Handle nested Composio response structure
+                if isinstance(meta_data, dict) and "results" in meta_data:
+                    results_list = meta_data["results"]
+                    if isinstance(results_list, list) and len(results_list) > 0:
+                        resp = results_list[0].get("response", {})
+                        if isinstance(resp, dict) and "data" in resp:
+                            meta_data = resp["data"]
+                            print(f"[gdrive_fetch_to_canvas] Extracted from results[0].response.data: {meta_data}")
+                
+                result = meta_data
+                print(f"[gdrive_fetch_to_canvas] Final result keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+            except Exception as e:
+                print(f"[gdrive_fetch_to_canvas] Error parsing metadata: {e}")
+                result = meta_json
+        else:
+            # Direct call for unknown tools
+            result = await composio_client.call_tool(tool_name, arguments)
+        
         return web.json_response({"result": result})
 
     except Exception as e:
@@ -351,11 +521,683 @@ async def composio_list_tools_endpoint(request):
         if not composio_client.session:
             return web.json_response({"error": "Composio MCP client not connected"}, status=500)
 
-        tools = [{"name": t.name, "description": t.description} for t in composio_client.tools]
+        tools = []
+        for t in composio_client.tools:
+            name = t.get("name") if isinstance(t, dict) else getattr(t, "name", "")
+            desc = t.get("description") if isinstance(t, dict) else getattr(t, "description", "")
+            schema = None
+            raw = t.get("tool") if isinstance(t, dict) else None
+            if isinstance(raw, dict):
+                func = raw.get("function", raw)
+                schema = func.get("parameters")
+            tools.append({"name": name, "description": desc, "parameters": schema})
         return web.json_response({"tools": tools})
 
     except Exception as e:
         print(f"Composio list tools error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def gdrive_upload_endpoint(request):
+    """Upload a file to Google Drive via Composio. Multipart form: field 'file'.
+    Text-decodable files are uploaded with content via CREATE_FILE_FROM_TEXT.
+    Binary files get a Drive entry with name + mimeType via CREATE_FILE."""
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != "file":
+            return web.json_response({"error": "multipart 'file' field is required"}, status=400)
+
+        raw = await field.read(decode=False)
+        filename = field.filename or "upload.bin"
+        mime_type = field.headers.get("Content-Type", "application/octet-stream")
+
+        # Try text upload first (works for text/*, json, xml, csv, etc.)
+        text_content = None
+        text_mime_prefixes = ("text/", "application/json", "application/xml", "application/javascript",
+                              "application/x-yaml", "application/csv", "image/svg+xml")
+        if mime_type.startswith(text_mime_prefixes):
+            try:
+                text_content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text_content = None
+
+        if text_content is not None:
+            result_json = await gdrive_create_file_from_text(filename, text_content, mime_type)
+        else:
+            result_json = await gdrive_upload_binary(filename, raw, mime_type)
+
+        try:
+            data = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except Exception:
+            data = result_json
+
+        # Extract the inner data object from the multi-execute wrapper
+        inner = data
+        if isinstance(inner, dict) and "results" in inner:
+            results_list = inner["results"]
+            if isinstance(results_list, list) and len(results_list) > 0:
+                resp = results_list[0].get("response", {})
+                if isinstance(resp, dict) and "data" in resp:
+                    inner = resp["data"]
+
+        file_id = inner.get("id") if isinstance(inner, dict) else None
+        if file_id:
+            try:
+                await gdrive_set_sharing_public(file_id)
+            except Exception as perm_err:
+                print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+
+        return web.json_response({"result": inner, "name": filename, "mimeType": mime_type})
+
+    except Exception as e:
+        print(f"GDrive upload error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def gdrive_fetch_endpoint(request):
+    """Fetch a Drive file's metadata + webViewLink by file_id (POST {file_id})."""
+    try:
+        data = await request.json()
+        file_id = data.get("file_id", "")
+        if not file_id:
+            return web.json_response({"error": "file_id is required"}, status=400)
+
+        try:
+            await gdrive_set_sharing_public(file_id)
+        except Exception as perm_err:
+            print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+
+        result_json = await gdrive_get_file_metadata(file_id)
+        try:
+            parsed = json.loads(result_json) if isinstance(result_json, str) else result_json
+            if isinstance(parsed, dict) and "results" in parsed:
+                results_list = parsed["results"]
+                if isinstance(results_list, list) and len(results_list) > 0:
+                    resp = results_list[0].get("response", {})
+                    if isinstance(resp, dict) and "data" in resp:
+                        parsed = resp["data"]
+        except Exception:
+            parsed = result_json
+
+        return web.json_response({"result": parsed})
+    except Exception as e:
+        print(f"GDrive fetch error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# In-memory context storage
+_context_store = {}
+
+# Server-side canvas state (synced from frontend)
+_canvas_files = {}
+
+
+def _analyze_files_with_gemini(files):
+    """Call Gemini HTTP API to analyze files and generate a context name + description."""
+    try:
+        api_key = GEMINI_API_KEY or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            return None
+
+        file_descriptions = []
+        for f in files:
+            name = f.get("name", "unknown")
+            mime = f.get("mimeType", "unknown")
+            file_descriptions.append(f"- {name} (type: {mime})")
+
+        prompt = f"""Analyze these files and create a short, meaningful context name (2-5 words) that describes what they have in common. Also provide a one-sentence description.
+
+Files:
+{chr(10).join(file_descriptions)}
+
+Respond in this exact JSON format:
+{{"context_name": "short name", "description": "one sentence description"}}"""
+
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 200}
+            },
+            headers={"Content-Type": "application/json"},
+            params={"key": api_key},
+            timeout=15,
+        )
+
+        if resp.status_code != 200:
+            print(f"Gemini analysis failed: {resp.status_code}")
+            return None
+
+        result = resp.json()
+        text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
+        import re
+        json_match = re.search(r'\{[^}]+\}', text)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        print(f"Gemini analysis error: {e}")
+    return None
+
+
+def _extract_file_content(file_info):
+    """Extract actual content from a file - text for text files, description for images."""
+    try:
+        file_id = file_info.get("drive_file_id") or file_info.get("fileId")
+        file_name = file_info.get("name", "unknown")
+        mime_type = file_info.get("mime_type") or file_info.get("mimeType", "unknown")
+        
+        if not file_id:
+            return f"File: {file_name} (no Drive ID available)"
+        
+        # Handle Google Docs/Sheets/Slides by exporting them
+        export_mime_type = None
+        if mime_type == "application/vnd.google-apps.document":
+            export_mime_type = "text/plain"
+            print(f"[Content Extract] Exporting Google Doc '{file_name}' as text...")
+        elif mime_type == "application/vnd.google-apps.spreadsheet":
+            export_mime_type = "text/csv"
+            print(f"[Content Extract] Exporting Google Sheet '{file_name}' as CSV...")
+        elif mime_type == "application/vnd.google-apps.presentation":
+            export_mime_type = "text/plain"
+            print(f"[Content Extract] Exporting Google Slides '{file_name}' as text...")
+        
+        # Download file from Google Drive
+        composio_args = {
+            "tool_slug": "gdrive_download_file",
+            "arguments": {"file_id": file_id},
+        }
+        
+        # Add mime_type for export if needed
+        if export_mime_type:
+            composio_args["arguments"]["mime_type"] = export_mime_type
+        
+        print(f"[Content Extract] Downloading {file_name} (id={file_id}) from Drive...")
+        download_resp = requests.post(
+            f"http://localhost:8000/api/composio/call",
+            json=composio_args,
+            timeout=30,
+        )
+        
+        if download_resp.status_code != 200:
+            print(f"[Content Extract] Download failed: {download_resp.status_code} - {download_resp.text[:200]}")
+            return f"File: {file_name} (download failed)"
+        
+        download_data = download_resp.json()
+        result = download_data.get("result", "")
+        
+        print(f"[Content Extract] Raw result type: {type(result).__name__}")
+        print(f"[Content Extract] Raw result preview: {str(result)[:300]}")
+        
+        # Parse the result - it might be JSON string or dict
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except:
+                pass
+        
+        # Extract content from various possible response formats
+        file_content = None
+        actual_mime_type = mime_type
+        
+        if isinstance(result, dict):
+            # Check for base64 content
+            file_content = result.get("content") or result.get("data") or result.get("base64_content")
+            # Check for results array (Composio format)
+            if not file_content and "results" in result:
+                results_list = result["results"]
+                if results_list and isinstance(results_list, list):
+                    first_result = results_list[0]
+                    if isinstance(first_result, dict):
+                        resp_data = first_result.get("response", {})
+                        if isinstance(resp_data, dict):
+                            # Navigate through data field
+                            data_field = resp_data.get("data")
+                            if data_field and isinstance(data_field, dict):
+                                # Check for downloaded_file_content (Composio Drive download format)
+                                downloaded_content = data_field.get("downloaded_file_content")
+                                if downloaded_content and isinstance(downloaded_content, dict):
+                                    # Get actual mime type from response
+                                    actual_mime_type = downloaded_content.get("mimetype", mime_type)
+                                    # Try to get content field first
+                                    file_content = downloaded_content.get("content") or downloaded_content.get("data")
+                                    # If not found, try to fetch from s3url
+                                    if not file_content and downloaded_content.get("s3url"):
+                                        print(f"[Content Extract] Fetching content from s3url...")
+                                        try:
+                                            s3_resp = requests.get(downloaded_content["s3url"], timeout=30)
+                                            if s3_resp.status_code == 200:
+                                                # Check if it's binary content
+                                                content_type = s3_resp.headers.get('content-type', '')
+                                                if 'text' in content_type or 'json' in content_type or export_mime_type:
+                                                    file_content = s3_resp.text
+                                                    print(f"[Content Extract] Successfully fetched {len(file_content)} chars from s3url (text)")
+                                                else:
+                                                    # Binary content - encode as base64
+                                                    import base64
+                                                    file_content = base64.b64encode(s3_resp.content).decode('utf-8')
+                                                    print(f"[Content Extract] Successfully fetched {len(file_content)} chars from s3url (binary/base64)")
+                                        except Exception as e:
+                                            print(f"[Content Extract] Failed to fetch from s3url: {e}")
+                            else:
+                                # Fallback: check if downloaded_file_content is directly in response
+                                downloaded_content = resp_data.get("downloaded_file_content")
+                                if downloaded_content and isinstance(downloaded_content, dict):
+                                    actual_mime_type = downloaded_content.get("mimetype", mime_type)
+                                    file_content = downloaded_content.get("content") or downloaded_content.get("data")
+        
+        if not file_content:
+            print(f"[Content Extract] No content found in response: {str(result)[:200]}")
+            return f"File: {file_name} (no content in response)"
+        
+        # Use actual_mime_type for content type detection
+        effective_mime_type = actual_mime_type
+        
+        # If we exported a Google Doc/Sheet/Slide, use the export mime type
+        if export_mime_type:
+            effective_mime_type = export_mime_type
+            print(f"[Content Extract] Using export mime type: {effective_mime_type}")
+        
+        # Handle text files
+        if effective_mime_type.startswith("text/") or file_name.endswith((".txt", ".md", ".json", ".csv")) or export_mime_type:
+            # Decode base64 if needed
+            if isinstance(file_content, str):
+                # Check if it looks like base64
+                try:
+                    import base64
+                    # Try to decode
+                    decoded = base64.b64decode(file_content).decode('utf-8', errors='replace')
+                    # If decoded successfully and looks like text, use it
+                    if decoded.isprintable() or '\n' in decoded:
+                        file_content = decoded
+                except:
+                    # Not base64, use as-is
+                    pass
+            elif isinstance(file_content, bytes):
+                file_content = file_content.decode('utf-8', errors='replace')
+            else:
+                file_content = str(file_content)
+            
+            print(f"[Content Extract] Text file content (first 100 chars): {file_content[:100]}...")
+            return f"File '{file_name}' content:\n{file_content}"
+        
+        # Handle images - send to Gemini for description
+        elif effective_mime_type.startswith("image/"):
+            print(f"[Content Extract] Analyzing image {file_name} with Gemini...")
+            print(f"[Content Extract] Image content type: {type(file_content).__name__}, length: {len(str(file_content))}")
+            
+            api_key = GEMINI_API_KEY or os.environ.get("GOOGLE_API_KEY")
+            if not api_key:
+                return f"Image file: {file_name} (no API key for analysis)"
+            
+            # Ensure content is base64 string
+            img_b64 = file_content
+            if isinstance(file_content, bytes):
+                import base64
+                img_b64 = base64.b64encode(file_content).decode('utf-8')
+            elif isinstance(file_content, str):
+                # Check if it's already base64 or needs encoding
+                try:
+                    import base64
+                    # Try to decode to see if it's base64
+                    decoded = base64.b64decode(file_content)
+                    # If successful, re-encode to ensure clean format
+                    img_b64 = base64.b64encode(decoded).decode('utf-8')
+                except:
+                    # Not base64, might be raw binary string - encode it
+                    img_b64 = base64.b64encode(file_content.encode('latin-1')).decode('utf-8')
+            else:
+                img_b64 = str(file_content)
+            
+            print(f"[Content Extract] Sending image to Gemini (base64 length: {len(img_b64)})")
+            
+            # Call Gemini vision API
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                json={
+                    "contents": [{
+                        "parts": [
+                            {"text": "Describe this image in detail. What objects, people, text, or scenes are visible?"},
+                            {"inline_data": {"mime_type": effective_mime_type, "data": img_b64}}
+                        ]
+                    }],
+                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300}
+                },
+                headers={"Content-Type": "application/json"},
+                params={"key": api_key},
+                timeout=15,
+            )
+            
+            if resp.status_code == 200:
+                result = resp.json()
+                description = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                print(f"[Content Extract] Image description: {description[:100]}...")
+                return f"Image '{file_name}' description:\n{description}"
+            else:
+                print(f"[Content Extract] Gemini vision failed: {resp.status_code} - {resp.text[:300]}")
+                return f"Image file: {file_name} (analysis failed)"
+        
+        # Handle PDF files - extract text using PyPDF2
+        elif effective_mime_type == "application/pdf" or file_name.endswith(".pdf"):
+            print(f"[Content Extract] Extracting text from PDF '{file_name}'...")
+            try:
+                from PyPDF2 import PdfReader
+                import io
+                
+                # Get binary content
+                if isinstance(file_content, bytes):
+                    pdf_bytes = file_content
+                elif isinstance(file_content, str):
+                    import base64
+                    try:
+                        pdf_bytes = base64.b64decode(file_content)
+                    except:
+                        pdf_bytes = file_content.encode('latin-1')
+                else:
+                    return f"File: {file_name} (cannot process PDF content)"
+                
+                # Extract text from PDF
+                reader = PdfReader(io.BytesIO(pdf_bytes))
+                text_parts = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        text_parts.append(text)
+                
+                extracted_text = "\n\n".join(text_parts)
+                print(f"[Content Extract] PDF text extracted ({len(extracted_text)} chars)")
+                return f"File '{file_name}' content:\n{extracted_text}"
+            except Exception as e:
+                print(f"[Content Extract] PDF extraction failed: {e}")
+                return f"File: {file_name} (PDF extraction failed: {str(e)[:50]})"
+        
+        # Handle DOCX files - extract text using python-docx
+        elif effective_mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or file_name.endswith(".docx"):
+            print(f"[Content Extract] Extracting text from DOCX '{file_name}'...")
+            try:
+                from docx import Document
+                import io
+                
+                # Get binary content
+                if isinstance(file_content, bytes):
+                    docx_bytes = file_content
+                elif isinstance(file_content, str):
+                    import base64
+                    try:
+                        docx_bytes = base64.b64decode(file_content)
+                    except:
+                        docx_bytes = file_content.encode('latin-1')
+                else:
+                    return f"File: {file_name} (cannot process DOCX content)"
+                
+                # Extract text from DOCX
+                doc = Document(io.BytesIO(docx_bytes))
+                text_parts = []
+                for para in doc.paragraphs:
+                    if para.text.strip():
+                        text_parts.append(para.text)
+                
+                extracted_text = "\n\n".join(text_parts)
+                print(f"[Content Extract] DOCX text extracted ({len(extracted_text)} chars)")
+                return f"File '{file_name}' content:\n{extracted_text}"
+            except Exception as e:
+                print(f"[Content Extract] DOCX extraction failed: {e}")
+                return f"File: {file_name} (DOCX extraction failed: {str(e)[:50]})"
+        
+        else:
+            return f"File: {file_name} (unsupported type: {effective_mime_type})"
+            
+    except Exception as e:
+        print(f"[Content Extract] Error: {e}")
+        return f"File: {file_info.get('name', 'unknown')} (extraction error: {str(e)[:50]})"
+
+
+def _store_context_in_cognee(context_id, context_name, description, files):
+    """Persist context to Cognee knowledge graph with actual file content."""
+    try:
+        from datetime import datetime
+        
+        created_at = datetime.now().isoformat()
+        
+        # Extract actual content from each file
+        file_contents = []
+        for f in files:
+            content = _extract_file_content(f)
+            file_contents.append(content)
+        
+        # Build comprehensive text with context + file contents
+        all_content = "\n\n".join(file_contents)
+        text = f"""Context group '{context_name}'
+Description: {description}
+Created: {created_at}
+Context ID: {context_id}
+
+File contents:
+{all_content}
+"""
+        
+        headers = get_cognee_headers()
+        
+        print(f"[Cognee] Storing context '{context_name}' with {len(files)} files")
+        print(f"[Cognee] Total text length: {len(text)} chars")
+        print(f"[Cognee] Text preview: {text[:500]}...")
+        print(f"[Cognee] Text preview: {text[:500]}...")
+        print(f"[Cognee] Text preview: {text[:500]}...")
+        
+        add_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/add_text",
+            json={"textData": [text], "datasetName": PERSISTENT_DATASET},
+            headers=headers,
+            timeout=30,
+        )
+        print(f"[Cognee] add_text response: {add_resp.status_code} - {add_resp.text[:200]}")
+        
+        if add_resp.status_code not in [200, 201]:
+            print(f"[Cognee] add_text failed: {add_resp.status_code}")
+            return
+        
+        cognify_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/cognify",
+            json={"datasets": [PERSISTENT_DATASET]},
+            headers=headers,
+            timeout=90,
+        )
+        print(f"[Cognee] cognify response: {cognify_resp.status_code} - {cognify_resp.text[:200]}")
+        
+        if cognify_resp.status_code not in [200, 201]:
+            print(f"[Cognee] cognify failed: {cognify_resp.status_code}")
+            return
+            
+        print(f"[Cognee] Context '{context_name}' successfully stored with content")
+    except Exception as e:
+        print(f"[Cognee] Context store failed: {e}")
+
+
+async def context_create_endpoint(request):
+    """Create a context group from selected files. Analyzes with Gemini, persists to Cognee."""
+    try:
+        data = await request.json()
+        files = data.get("files", [])
+
+        if not files:
+            return web.json_response({"error": "files array is required"}, status=400)
+
+        analysis = _analyze_files_with_gemini(files)
+
+        if analysis:
+            context_name = analysis.get("context_name", f"Context {len(_context_store) + 1}")
+            description = analysis.get("description", "")
+        else:
+            file_names = [f.get("name", "unknown") for f in files]
+            context_name = " & ".join(file_names)
+            if len(context_name) > 40:
+                context_name = context_name[:37] + "..."
+            description = f"Group of {len(files)} files"
+
+        context_id = f"ctx-{len(_context_store) + 1}-{int(time.time())}"
+        _context_store[context_id] = {
+            "id": context_id,
+            "name": context_name,
+            "description": description,
+            "files": files,
+            "created_at": time.time(),
+        }
+
+        t = threading.Thread(
+            target=_store_context_in_cognee,
+            args=(context_id, context_name, description, files),
+            daemon=True,
+        )
+        t.start()
+
+        return web.json_response({
+            "context_id": context_id,
+            "context_name": context_name,
+            "description": description,
+            "file_count": len(files),
+        })
+    except Exception as e:
+        print(f"Context create error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def context_rename_endpoint(request):
+    """Rename an existing context group."""
+    try:
+        data = await request.json()
+        context_id = data.get("context_id", "")
+        new_name = data.get("name", "")
+
+        if not context_id or not new_name:
+            return web.json_response({"error": "context_id and name are required"}, status=400)
+
+        if context_id not in _context_store:
+            return web.json_response({"error": "context not found"}, status=404)
+
+        old_name = _context_store[context_id]["name"]
+        _context_store[context_id]["name"] = new_name
+
+        return web.json_response({
+            "context_id": context_id,
+            "old_name": old_name,
+            "new_name": new_name,
+        })
+    except Exception as e:
+        print(f"Context rename error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def context_list_endpoint(request):
+    """List all context groups."""
+    try:
+        contexts = list(_context_store.values())
+        return web.json_response({"contexts": contexts})
+    except Exception as e:
+        print(f"Context list error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def canvas_sync_endpoint(request):
+    """Sync canvas file state from frontend."""
+    try:
+        data = await request.json()
+        files = data.get("files", [])
+        global _canvas_files
+        _canvas_files = {f["id"]: f for f in files}
+        print(f"[Canvas Sync] Received {len(files)} files: {[f.get('fileName') for f in files]}")
+        return web.json_response({"status": "synced", "count": len(_canvas_files)})
+    except Exception as e:
+        print(f"Canvas sync error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def canvas_list_files_endpoint(request):
+    """Agent tool: list all files currently on canvas."""
+    try:
+        files = list(_canvas_files.values())
+        print(f"[Canvas List] Returning {len(files)} files")
+        return web.json_response({
+            "files": [
+                {
+                    "canvas_id": f.get("id"),
+                    "name": f.get("fileName", "unknown"),
+                    "drive_file_id": f.get("fileId"),
+                    "mime_type": f.get("mimeType"),
+                }
+                for f in files
+            ]
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def canvas_group_files_endpoint(request):
+    """Agent tool: group specific files into a context by file IDs."""
+    try:
+        data = await request.json()
+        print(f"[Canvas Group] Received request: {data}")
+        file_ids = data.get("file_ids", [])
+        context_name = data.get("context_name", "")
+        
+        print(f"[Canvas Group] Looking for file_ids: {file_ids}")
+        print(f"[Canvas Group] Available files in _canvas_files: {list(_canvas_files.keys())}")
+
+        if not file_ids or len(file_ids) < 2:
+            return web.json_response({"error": "file_ids array with at least 2 items required"}, status=400)
+
+        files = []
+        for fid in file_ids:
+            if fid in _canvas_files:
+                f = _canvas_files[fid]
+                files.append({
+                    "id": f.get("id"),
+                    "name": f.get("fileName", "unknown"),
+                    "fileId": f.get("fileId"),
+                    "drive_file_id": f.get("fileId"),
+                    "mime_type": f.get("mimeType"),
+                    "mimeType": f.get("mimeType"),
+                })
+
+        if len(files) < 2:
+            return web.json_response({"error": "Not enough valid files found on canvas"}, status=400)
+
+        if not context_name:
+            analysis = _analyze_files_with_gemini(files)
+            if analysis:
+                context_name = analysis.get("context_name", f"Context {len(_context_store) + 1}")
+                description = analysis.get("description", "")
+            else:
+                context_name = f"Context {len(_context_store) + 1}"
+                description = f"Group of {len(files)} files"
+        else:
+            description = f"Group of {len(files)} files: {', '.join(f.get('name', '') for f in files)}"
+
+        context_id = f"ctx-{len(_context_store) + 1}-{int(time.time())}"
+        _context_store[context_id] = {
+            "id": context_id,
+            "name": context_name,
+            "description": description,
+            "files": files,
+            "created_at": time.time(),
+        }
+
+        t = threading.Thread(
+            target=_store_context_in_cognee,
+            args=(context_id, context_name, description, files),
+            daemon=True,
+        )
+        t.start()
+
+        return web.json_response({
+            "context_id": context_id,
+            "context_name": context_name,
+            "description": description,
+            "file_count": len(files),
+            "file_ids": file_ids,
+        })
+    except Exception as e:
+        print(f"Canvas group files error: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -397,7 +1239,22 @@ async def serve_static_file(request):
 
 async def main():
     """Starts the HTTP server."""
-    app = web.Application()
+    # CORS middleware
+    @web.middleware
+    async def cors_middleware(request, handler):
+        response = await handler(request)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+
+    app = web.Application(middlewares=[cors_middleware])
+
+    # Handle OPTIONS preflight
+    async def options_handler(request):
+        return web.Response(status=200)
+
+    app.router.add_route('OPTIONS', '/{path:.*}', options_handler)
     
     # API endpoints
     app.router.add_post("/api/token", get_ephemeral_token)
@@ -406,6 +1263,7 @@ async def main():
     app.router.add_post("/api/cognee/cognify", cognee_cognify)
     app.router.add_post("/api/cognee/recall", cognee_recall)
     app.router.add_post("/api/cognee/forget", cognee_forget)
+    app.router.add_get("/api/cognee/visualize", cognee_visualize)
 
     # Notion MCP endpoints
     app.router.add_post("/api/notion/search", notion_search_endpoint)
@@ -414,9 +1272,23 @@ async def main():
     app.router.add_post("/api/notion/get_page", notion_get_page_endpoint)
     app.router.add_get("/api/notion/tools", notion_list_tools_endpoint)
 
-    # Composio MCP endpoints (Slack, Gmail, Google Calendar)
+    # Composio MCP endpoints (Slack, Gmail, Google Calendar, Google Drive)
     app.router.add_post("/api/composio/call", composio_call_endpoint)
     app.router.add_get("/api/composio/tools", composio_list_tools_endpoint)
+
+    # Google Drive endpoints
+    app.router.add_post("/api/gdrive/upload", gdrive_upload_endpoint)
+    app.router.add_post("/api/gdrive/fetch", gdrive_fetch_endpoint)
+
+    # Context group endpoints
+    app.router.add_post("/api/context/create", context_create_endpoint)
+    app.router.add_post("/api/context/rename", context_rename_endpoint)
+    app.router.add_get("/api/context/list", context_list_endpoint)
+
+    # Canvas agent tool endpoints
+    app.router.add_post("/api/canvas/sync", canvas_sync_endpoint)
+    app.router.add_get("/api/canvas/files", canvas_list_files_endpoint)
+    app.router.add_post("/api/canvas/group", canvas_group_files_endpoint)
 
     # Initialize Notion MCP client
     notion_ok = await init_notion()

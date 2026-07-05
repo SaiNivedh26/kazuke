@@ -66,6 +66,12 @@ function initDOM() {
     "debugInfo",
     "setupJsonSection",
     "setupJsonDisplay",
+    "knowledgeGraphBtn",
+    "kgOverlay",
+    "kgCloseBtn",
+    "kgFrame",
+    "kgError",
+    "kgLoading",
   ];
 
   ids.forEach((id) => {
@@ -617,10 +623,53 @@ function initEventListeners() {
   elements.sendBtn.addEventListener("click", sendMessage);
   elements.volume.addEventListener("input", updateVolume);
   elements.temperature.addEventListener("input", updateTemperature);
+  elements.knowledgeGraphBtn.addEventListener("click", openKnowledgeGraph);
+  elements.kgCloseBtn.addEventListener("click", closeKnowledgeGraph);
+  elements.kgOverlay.addEventListener("click", (e) => {
+    if (e.target === elements.kgOverlay) closeKnowledgeGraph();
+  });
 
   elements.chatInput.addEventListener("keypress", (e) => {
     if (e.key === "Enter") sendMessage();
   });
+}
+
+// Knowledge Graph overlay
+async function openKnowledgeGraph() {
+  elements.kgOverlay.classList.add("active");
+  elements.kgFrame.style.display = "none";
+  elements.kgError.style.display = "none";
+  elements.kgLoading.style.display = "block";
+  elements.kgLoading.textContent = "Loading graph visualization...";
+
+  try {
+    const response = await fetch("/api/cognee/visualize");
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = JSON.stringify(await response.json());
+      } catch (_) {
+        detail = await response.text();
+      }
+      throw new Error(`HTTP ${response.status}\n${detail}`);
+    }
+    const html = await response.text();
+    elements.kgFrame.srcdoc = html;
+    elements.kgLoading.style.display = "none";
+    elements.kgFrame.style.display = "block";
+  } catch (err) {
+    elements.kgLoading.style.display = "none";
+    elements.kgError.style.display = "block";
+    elements.kgError.textContent = "Failed to load visualization:\n" + err.message;
+  }
+}
+
+function closeKnowledgeGraph() {
+  elements.kgOverlay.classList.remove("active");
+  elements.kgFrame.srcdoc = "";
+  elements.kgFrame.style.display = "none";
+  elements.kgError.style.display = "none";
+  elements.kgLoading.style.display = "none";
 }
 
 // Initialize

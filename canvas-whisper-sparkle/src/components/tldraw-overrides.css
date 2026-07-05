@@ -1,0 +1,4 @@
+/* Hide the tldraw watermark */
+.tl-watermark_SEE-LICENSE {
+  display: none !important;
+}

@@ -62,6 +62,76 @@
       background-color: var(--google-red);
       color: white;
     }
+
+    /* Knowledge Graph overlay */
+    #kgOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #kgOverlay.active {
+      display: flex;
+    }
+
+    #kgModal {
+      width: 90vw;
+      height: 85vh;
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    #kgHeader {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 16px;
+      background: #f5f5f5;
+      border-bottom: 1px solid #ddd;
+      font-weight: bold;
+    }
+
+    #kgCloseBtn {
+      background: transparent;
+      border: none;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      color: #555;
+      padding: 0 8px;
+    }
+
+    #kgCloseBtn:hover {
+      color: #000;
+    }
+
+    #kgFrame {
+      flex: 1;
+      width: 100%;
+      border: none;
+    }
+
+    #kgError {
+      padding: 20px;
+      color: #b00;
+      font-family: monospace;
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    #kgLoading {
+      padding: 20px;
+      color: #444;
+      display: none;
+    }
   </style>
 </head>
 
@@ -111,10 +181,20 @@ TOOL PRIORITY:
 2. Notion is SECONDARY - only use when user explicitly says "save to Notion", "add to Notion", "retrieve from Notion", etc.
 3. Never use Notion search for general questions - always try cognee_recall first
 
+AUTO-COGNEE COUPLING (IMPORTANT - NEW BEHAVIOR):
+- Every Slack / Gmail / Calendar / Notion tool call AUTOMATICALLY writes a dated record to Cognee memory in the background. You do NOT need to call cognee_remember after such tool calls - the system does it for you.
+- Every RETRIEVE tool (calendar_get_events, gmail_fetch_emails, notion_search, notion_get_page, slack_list_channels) ALSO fires a parallel cognee_recall and returns BOTH live data and memory under a `memory` field in its response. Treat the `memory` field (when present) as prior cross-session memory; fuse it with the live `result` and answer concisely. If `memory` is null, no prior memory exists - answer from live data only.
+- You still call cognee_remember yourself for facts/observations you state verbally or that the user tells you directly (e.g. "the weather today is nice", "I prefer X", "this was gifted by..."). Include the current date as a prefix: "On YYYY-MM-DD: ...".
+
 KEY BEHAVIOR:
 - Current session: You already remember everything from THIS conversation. Answer directly from context.
 - Past sessions: Use cognee_recall to search the shared knowledge graph for info from PREVIOUS sessions.
 - Notion: ONLY use Notion tools when user explicitly asks to save/retrieve from Notion. Do NOT use Notion for general questions.
+
+TASK vs CALENDAR - DO NOT OVER-REACH:
+- "Create a task" / "remember to..." / "note this down" -> store via cognee_remember ONLY. Do NOT call calendar_create_event.
+- Only call calendar_create_event when the user EXPLICITLY asks to add to / put on / schedule in the calendar (e.g. "block my calendar", "put it on the calendar", "schedule a meeting").
+- If unsure whether the user wants a calendar entry, ASK before touching the calendar. Never silently create calendar events.
 
 MEMORY RULES - ALWAYS STORE THESE WITH DATE CONTEXT:
 1. When user states facts (preferences, objects, relationships, locations, tasks): call cognee_remember immediately
@@ -135,25 +215,20 @@ CRITICAL WORKFLOW - When user asks to save content to Notion:
    - You must ask: "What are your tasks for tomorrow?"
 2. Once you have the content, use notion_search to check if a relevant page exists
 3. If found, use notion_append_to_page; if not, use notion_create_page
-4. AFTER Notion operation succeeds, ALWAYS call cognee_remember to store:
-   - The page name/title
-   - The page ID (from Notion response)
-   - The date it was created
-   - The FULL content that was stored
-   Example: "On 2025-01-08: Created Notion page 'hack' (ID: abc-123) containing tasks for tomorrow: finish report, call client, review PRs"
+4. A dated Cognee record of the operation (title, page ID, content) is written automatically - no extra cognee_remember needed.
 
 CRITICAL WORKFLOW - When user asks about tasks/content:
 1. FIRST, use cognee_recall to search memory for the tasks/content
 2. If found in memory, return the content directly from memory
 3. If NOT found in memory but you know a Notion page exists (from previous dual-write):
-   - Use notion_get_page with the stored page ID to fetch the content
+   - Use notion_get_page with the stored page ID to fetch the content (response also carries fused memory)
    - Return the content to the user
 4. If neither memory nor Notion has it, say "I don't have that information"
 
 CRITICAL WORKFLOW - When user asks about Notion pages:
 1. FIRST, use cognee_recall to search memory for page names/IDs
-2. If found, you can use notion_get_page with the page ID to fetch content
-3. If not found in memory, use notion_search to find the page
+2. If found, you can use notion_get_page with the page ID to fetch content (memory fused automatically)
+3. If not found in memory, use notion_search to find the page (memory fused automatically)
 4. Then use notion_get_page to retrieve the content
 
 Memory tools:
@@ -213,10 +288,10 @@ Example: User says "delete all events today"
 - Report which events were deleted
 
 WORKFLOW - When user asks about emails, calendar, or Slack:
-1. Use the appropriate Composio tool directly
-2. After fetching information, ALWAYS call cognee_remember to store important details
-   Example: "On 2025-01-08: User has a meeting with John at 3 PM tomorrow"
-3. This allows cross-session recall of emails, events, and messages
+1. Use the appropriate Composio tool directly.
+2. A dated Cognee record of the user's fetch/send action is written automatically - no explicit cognee_remember needed.
+3. Retrieve tools (calendar_get_events, gmail_fetch_emails, slack_list_channels) fuse live data with parallel cognee_recall under a `memory` field; use both to answer concisely.
+   Example memory match: "On 2025-01-08: User has a meeting with John at 3 PM tomorrow"
 
 IMPORTANT: Don't call cognee_recall for things the user just told you in this session - you already know those!</textarea>
           </div>
@@ -452,6 +527,7 @@ IMPORTANT: Don't call cognee_recall for things the user just told you in this se
         <div>
           <button id="connectBtn">Connect</button>
           <button id="disconnectBtn">Disconnect</button>
+          <button id="knowledgeGraphBtn">Knowledge Graph</button>
         </div>
 
         <br />
@@ -542,11 +618,24 @@ IMPORTANT: Don't call cognee_recall for things the user just told you in this se
     </div>
   </div>
 
+  <!-- Knowledge Graph overlay -->
+  <div id="kgOverlay">
+    <div id="kgModal">
+      <div id="kgHeader">
+        <span>Knowledge Graph</span>
+        <button id="kgCloseBtn" title="Close">&times;</button>
+      </div>
+      <div id="kgLoading">Loading graph visualization...</div>
+      <div id="kgError"></div>
+      <iframe id="kgFrame" sandbox="allow-scripts allow-same-origin"></iframe>
+    </div>
+  </div>
+
   <!-- Load libraries -->
-  <script src="geminilive.js"></script>
-  <script src="mediaUtils.js"></script>
-  <script src="tools.js"></script>
-  <script src="script.js"></script>
+  <script src="geminilive.js?v=2"></script>
+  <script src="mediaUtils.js?v=2"></script>
+  <script src="tools.js?v=2"></script>
+  <script src="script.js?v=2"></script>
 </body>
 
 </html>

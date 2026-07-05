@@ -1,4 +1,58 @@
 /**
+ * Cognee auto-coupling helpers
+ * Every tool's response is mirrored into Cognee memory (auto-remember),
+ * and every retrieve tool fuses its live result with a parallel cognee_recall.
+ */
+
+const COGNEE_AUTO = {
+  enabled: true,
+};
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function _cogneeRememberBackground(text) {
+  if (!COGNEE_AUTO.enabled) return;
+  try {
+    fetch("/api/cognee/remember", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }).catch((err) => console.error("Cognee auto-remember bg error:", err));
+  } catch (e) {
+    console.error("Cognee auto-remember error:", e);
+  }
+}
+
+async function _cogneeRecall(query) {
+  if (!COGNEE_AUTO.enabled || !query) return null;
+  try {
+    const resp = await fetch("/api/cognee/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data && data.result ? data.result : null;
+  } catch (e) {
+    console.error("Cognee auto-recall error:", e);
+    return null;
+  }
+}
+
+function _summarizeResult(obj, maxLen) {
+  try {
+    let s = typeof obj === "string" ? obj : JSON.stringify(obj);
+    if (s.length > maxLen) s = s.slice(0, maxLen) + "...";
+    return s;
+  } catch (e) {
+    return "[unreadable]";
+  }
+}
+
+/**
  * Show Alert Box Tool
  * Displays a browser alert dialog with a custom message
  */
@@ -340,20 +394,30 @@ class NotionSearchTool extends FunctionCallDefinition {
     if (!query) return { error: "No query provided" };
 
     try {
-      const response = await fetch("/api/notion/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: query })
-      });
+      const recallQuery = `notion page ${query}`;
+
+      const [response, memory] = await Promise.all([
+        fetch("/api/notion/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: query })
+        }),
+        _cogneeRecall(recallQuery)
+      ]);
 
       const result = await response.json();
 
       if (!response.ok) {
-        return { error: result.error || "Search failed" };
+        return { error: result.error || "Search failed", memory };
       }
 
-      console.log(`🔍 Notion search: "${query}"`);
-      return { result: result.result };
+      _cogneeRememberBackground(
+        `On ${todayISO()}: User searched Notion for "${query}". ` +
+        `Result snippet: ${_summarizeResult(result.result, 400)}`
+      );
+
+      console.log(`🔍 Notion search: "${query}" (memory fused)`);
+      return { result: result.result, memory };
     } catch (error) {
       return { error: error.message };
     }
@@ -412,6 +476,10 @@ class NotionCreatePageTool extends FunctionCallDefinition {
 
       console.log(`📝 Notion page created: "${title}"`);
       addMessage(`[Notion page created: "${title}"]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Created Notion page "${title}" under parent ${parent_id || "(auto)"}. ` +
+        `Content: "${content}". Page object: ${_summarizeResult(result.result, 400)}`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
@@ -464,6 +532,9 @@ class NotionAppendTool extends FunctionCallDefinition {
 
       console.log(`📝 Appended to Notion page: ${page_id}`);
       addMessage(`[Content added to Notion page]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Appended to Notion page ${page_id}. Content: "${content}"`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
@@ -498,20 +569,30 @@ class NotionGetPageTool extends FunctionCallDefinition {
     if (!page_id) return { error: "No page_id provided" };
 
     try {
-      const response = await fetch("/api/notion/get_page", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ page_id })
-      });
+      const recallQuery = `notion page ${page_id}`;
+
+      const [response, memory] = await Promise.all([
+        fetch("/api/notion/get_page", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ page_id })
+        }),
+        _cogneeRecall(recallQuery)
+      ]);
 
       const result = await response.json();
 
       if (!response.ok) {
-        return { error: result.error || "Get page failed" };
+        return { error: result.error || "Get page failed", memory };
       }
 
-      console.log(`📄 Notion page retrieved: ${page_id}`);
-      return { result: result.result };
+      _cogneeRememberBackground(
+        `On ${todayISO()}: User retrieved Notion page ${page_id}. ` +
+        `Content snippet: ${_summarizeResult(result.result, 500)}`
+      );
+
+      console.log(`📄 Notion page retrieved: ${page_id} (memory fused)`);
+      return { result: result.result, memory };
     } catch (error) {
       return { error: error.message };
     }
@@ -566,6 +647,9 @@ class SlackSendMessageTool extends FunctionCallDefinition {
 
       console.log(`💬 Slack message sent to ${channel}`);
       addMessage(`[Message sent to Slack: ${channel}]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Sent Slack message to #${channel}: "${message}"`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
@@ -597,23 +681,33 @@ class SlackListChannelsTool extends FunctionCallDefinition {
 
   async functionToCall(parameters) {
     try {
-      const response = await fetch("/api/composio/call", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tool_name: "SLACK_LIST_ALL_CHANNELS",
-          arguments: { limit: parameters.limit || 100 }
-        })
-      });
+      const recallQuery = `slack channels`;
+
+      const [response, memory] = await Promise.all([
+        fetch("/api/composio/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tool_name: "SLACK_LIST_ALL_CHANNELS",
+            arguments: { limit: parameters.limit || 100 }
+          })
+        }),
+        _cogneeRecall(recallQuery)
+      ]);
 
       const result = await response.json();
 
       if (!response.ok) {
-        return { error: result.error || "Failed to list channels" };
+        return { error: result.error || "Failed to list channels", memory };
       }
 
-      console.log(`📋 Slack channels listed`);
-      return { result: result.result };
+      _cogneeRememberBackground(
+        `On ${todayISO()}: User listed Slack channels. ` +
+        `Result snippet: ${_summarizeResult(result.result, 400)}`
+      );
+
+      console.log(`📋 Slack channels listed (memory fused)`);
+      return { result: result.result, memory };
     } catch (error) {
       return { error: error.message };
     }
@@ -654,23 +748,33 @@ class GmailFetchTool extends FunctionCallDefinition {
       const arguments_obj = { max_results };
       if (query) arguments_obj.query = query;
 
-      const response = await fetch("/api/composio/call", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tool_name: "GMAIL_FETCH_EMAILS",
-          arguments: arguments_obj
-        })
-      });
+      const recallQuery = `gmail emails ${query || "inbox"}`;
+
+      const [response, memory] = await Promise.all([
+        fetch("/api/composio/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tool_name: "GMAIL_FETCH_EMAILS",
+            arguments: arguments_obj
+          })
+        }),
+        _cogneeRecall(recallQuery)
+      ]);
 
       const result = await response.json();
 
       if (!response.ok) {
-        return { error: result.error || "Failed to fetch emails" };
+        return { error: result.error || "Failed to fetch emails", memory };
       }
 
-      console.log(`📧 Gmail emails fetched`);
-      return { result: result.result };
+      _cogneeRememberBackground(
+        `On ${todayISO()}: User fetched Gmail (query="${query || "inbox"}"). ` +
+        `Result snippet: ${_summarizeResult(result.result, 400)}`
+      );
+
+      console.log(`📧 Gmail emails fetched (memory fused)`);
+      return { result: result.result, memory };
     } catch (error) {
       return { error: error.message };
     }
@@ -729,6 +833,9 @@ class GmailSendTool extends FunctionCallDefinition {
 
       console.log(`📧 Email sent to ${to}`);
       addMessage(`[Email sent to ${to}]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Sent email to ${to} | subject: "${subject}" | body: "${body}"`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
@@ -774,23 +881,42 @@ class CalendarGetEventsTool extends FunctionCallDefinition {
       if (time_min) arguments_obj.time_min = time_min;
       if (time_max) arguments_obj.time_max = time_max;
 
-      const response = await fetch("/api/composio/call", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tool_name: "GOOGLECALENDAR_EVENTS_LIST",
-          arguments: arguments_obj
-        })
-      });
+      const recallQuery = `calendar events ${time_min || "upcoming"} ${time_max || ""}`.trim();
+
+      const [response, memory] = await Promise.all([
+        fetch("/api/composio/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tool_name: "GOOGLECALENDAR_EVENTS_LIST",
+            arguments: arguments_obj
+          })
+        }),
+        _cogneeRecall(recallQuery)
+      ]);
 
       const result = await response.json();
 
       if (!response.ok) {
-        return { error: result.error || "Failed to get events" };
+        return { error: result.error || "Failed to get events", memory };
       }
 
-      console.log(`📅 Calendar events fetched`);
-      return { result: result.result };
+      if (memory) {
+        _cogneeRememberBackground(
+          `On ${todayISO()}: User checked calendar events ` +
+          `(${time_min || "now"} to ${time_max || "later"}). ` +
+          `Live result: ${_summarizeResult(result.result, 400)}`
+        );
+      } else {
+        _cogneeRememberBackground(
+          `On ${todayISO()}: User checked calendar events ` +
+          `(${time_min || "now"} to ${time_max || "later"}). ` +
+          `Live result: ${_summarizeResult(result.result, 400)}`
+        );
+      }
+
+      console.log(`📅 Calendar events fetched (memory fused)`);
+      return { result: result.result, memory };
     } catch (error) {
       return { error: error.message };
     }
@@ -882,6 +1008,10 @@ class CalendarCreateEventTool extends FunctionCallDefinition {
 
       console.log(`📅 Calendar event created: "${summary}"`);
       addMessage(`[Calendar event created: "${summary}"]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Created calendar event "${summary}" starting ${start_datetime} ` +
+        `(${timezone || "Asia/Kolkata"}). Result: ${_summarizeResult(result.result, 400)}`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
@@ -944,6 +1074,9 @@ class CalendarDeleteEventTool extends FunctionCallDefinition {
 
       console.log(`🗑️ Calendar event deleted: ${event_id}`);
       addMessage(`[Calendar event deleted]`, "system");
+      _cogneeRememberBackground(
+        `On ${todayISO()}: Deleted calendar event ${event_id} (calendar: ${calendar_id || "primary"})`
+      );
       return { result: result.result };
     } catch (error) {
       return { error: error.message };
