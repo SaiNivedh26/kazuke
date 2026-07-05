@@ -76,6 +76,64 @@ def store_in_background(texts):
     t = threading.Thread(target=_background_store, args=(texts,), daemon=True)
     t.start()
 
+
+def resolve_dataset_id(dataset_name):
+    """Resolve a dataset name to its UUID via the Cognee datasets listing."""
+    try:
+        headers = get_cognee_headers()
+        resp = requests.get(
+            f"{COGNEE_BASE_URL}/api/v1/datasets/",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        for ds in resp.json():
+            if ds.get("name") == dataset_name:
+                return ds.get("id")
+    except Exception as e:
+        print(f"resolve_dataset_id error: {e}")
+    return None
+
+
+async def cognee_visualize(request):
+    """Proxies the Cognee graph visualization HTML for the shared dataset."""
+    try:
+        dataset_id = request.query.get("dataset_id")
+        if not dataset_id:
+            dataset_id = resolve_dataset_id(PERSISTENT_DATASET)
+        if not dataset_id:
+            return web.json_response(
+                {"error": "Could not resolve dataset_id for visualization"},
+                status=404,
+            )
+
+        headers = get_cognee_headers()
+        viz_resp = requests.get(
+            f"{COGNEE_BASE_URL}/api/v1/visualize",
+            params={"dataset_id": dataset_id},
+            headers=headers,
+            timeout=60,
+        )
+
+        if viz_resp.status_code != 200:
+            return web.json_response(
+                {
+                    "error": f"Visualize failed: {viz_resp.status_code}",
+                    "details": viz_resp.text,
+                },
+                status=502,
+            )
+
+        return web.Response(
+            body=viz_resp.content,
+            content_type="text/html",
+            charset="utf-8",
+        )
+    except Exception as e:
+        print(f"Cognee visualize error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
 # Initialize the Gemini GenAI client
 if not GEMINI_API_KEY:
     print("⚠️ Warning: GEMINI_API_KEY not found in environment. Please set it in .env or as an environment variable.")
@@ -467,6 +525,7 @@ async def main():
     app.router.add_post("/api/cognee/cognify", cognee_cognify)
     app.router.add_post("/api/cognee/recall", cognee_recall)
     app.router.add_post("/api/cognee/forget", cognee_forget)
+    app.router.add_get("/api/cognee/visualize", cognee_visualize)
 
     # Notion MCP endpoints
     app.router.add_post("/api/notion/search", notion_search_endpoint)

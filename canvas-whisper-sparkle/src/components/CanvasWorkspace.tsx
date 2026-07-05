@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { VoiceAura, type AuraState } from "./VoiceAura";
 import { ToolsDrawer } from "./ToolsDrawer";
+import { KnowledgeGraphDialog } from "./KnowledgeGraphDialog";
 import { useGeminiLive, type ToolToggles, type GeminiMessage } from "@/hooks/useGeminiLive";
 import addFilesSvg from "@/assets/add_files.svg";
 import docReadySvg from "@/assets/doc_ready.svg";
@@ -46,10 +47,22 @@ export function CanvasWorkspace() {
     const initial: ToolToggles = {};
     // Default all tools to true
     const toolIds = [
-      "cognee-remember", "cognee-batch-remember", "cognee-cognify", "cognee-recall", "cognee-forget",
-      "notion-search", "notion-create-page", "notion-append", "notion-get-page",
-      "slack-send", "slack-list", "gmail-fetch", "gmail-send",
-      "calendar-get", "calendar-create", "calendar-delete",
+      "cognee-remember",
+      "cognee-batch-remember",
+      "cognee-cognify",
+      "cognee-recall",
+      "cognee-forget",
+      "notion-search",
+      "notion-create-page",
+      "notion-append",
+      "notion-get-page",
+      "slack-send",
+      "slack-list",
+      "gmail-fetch",
+      "gmail-send",
+      "calendar-get",
+      "calendar-create",
+      "calendar-delete",
     ];
     for (const id of toolIds) {
       initial[id] = true;
@@ -84,7 +97,8 @@ export function CanvasWorkspace() {
   } = useGeminiLive({
     serverUrl: "http://localhost:8000",
     toolToggles,
-    systemInstructions: "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone.",
+    systemInstructions:
+      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone.",
     onMessage: (msg: GeminiMessage) => {
       console.log("Gemini message:", msg.type);
     },
@@ -341,12 +355,16 @@ export function CanvasWorkspace() {
             connectionState === "connected"
               ? "bg-emerald-500 hover:bg-emerald-600"
               : connectionState === "connecting"
-              ? "bg-yellow-500 hover:bg-yellow-600"
-              : "bg-red-500 hover:bg-red-600"
+                ? "bg-yellow-500 hover:bg-yellow-600"
+                : "bg-red-500 hover:bg-red-600"
           }`}
           aria-label={connectionState === "connected" ? "Disconnect" : "Connect"}
         >
-          {connectionState === "connected" ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+          {connectionState === "connected" ? (
+            <Mic className="w-5 h-5" />
+          ) : (
+            <MicOff className="w-5 h-5" />
+          )}
         </button>
 
         <div className="h-8 w-px bg-border" />
@@ -394,6 +412,12 @@ export function CanvasWorkspace() {
         </button>
 
         <ToolsDrawer toggles={toolToggles} onToggleChange={handleToggleChange} />
+
+        <KnowledgeGraphDialog
+          open={kbActive}
+          onOpenChange={setKbActive}
+          serverUrl="http://localhost:8000"
+        />
 
         <input
           ref={fileInputRef}
