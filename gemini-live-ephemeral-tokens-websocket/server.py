@@ -800,6 +800,51 @@ async def composio_call_endpoint(request):
             # Direct call for unknown tools
             result = await composio_client.call_tool(tool_name, arguments)
         
+        # Auto-store tool call results in Cognee for later recall
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # Create a human-readable summary with full content based on tool type
+            if tool_name == "slack_send_message":
+                channel = arguments.get("channel", "")
+                text = arguments.get("text", "") or arguments.get("markdown_text", "")
+                # Extract message ID from result if available
+                msg_ref = ""
+                try:
+                    result_data = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(result_data, dict) and "results" in result_data:
+                        msg_data = result_data["results"][0].get("response", {}).get("data", {})
+                        msg_ref = f"\nMessage ID: {msg_data.get('message', {}).get('ts', 'N/A')}"
+                except:
+                    pass
+                memory_text = f"On {date_str} at {timestamp}: Sent Slack message to channel '{channel}'\n\nFull message content:\n{text}{msg_ref}"
+            elif tool_name == "gmail_send_email":
+                to = arguments.get("to", "")
+                subject = arguments.get("subject", "")
+                body = arguments.get("body", "")
+                memory_text = f"On {date_str} at {timestamp}: Sent email\n\nTo: {to}\nSubject: {subject}\n\nFull email body:\n{body}"
+            elif tool_name == "calendar_create_event":
+                summary = arguments.get("title", "") or arguments.get("summary", "")
+                start = arguments.get("start_datetime", "")
+                end = arguments.get("end_datetime", "")
+                desc = arguments.get("description", "")
+                memory_text = f"On {date_str} at {timestamp}: Created calendar event\n\nEvent: {summary}\nStart: {start}\nEnd: {end}\nDescription: {desc}"
+            elif tool_name == "notion_create_page":
+                title = arguments.get("title", "")
+                content = arguments.get("content", "")
+                parent_id = arguments.get("parent_id", "")
+                memory_text = f"On {date_str} at {timestamp}: Created Notion page\n\nTitle: {title}\nParent ID: {parent_id}\n\nFull page content:\n{content}"
+            else:
+                # Generic format for other tools - include full result
+                memory_text = f"On {date_str} at {timestamp}: Executed tool '{tool_name}'\n\nArguments:\n{json.dumps(arguments, indent=2)}\n\nFull Result:\n{json.dumps(result, indent=2)}"
+            
+            store_in_background([memory_text])
+            print(f"[Auto-Store] Stored {tool_name} result in Cognee: {memory_text[:100]}...")
+        except Exception as store_err:
+            print(f"[Auto-Store] Failed to store {tool_name}: {store_err}")
+        
         return web.json_response({"result": result})
 
     except Exception as e:

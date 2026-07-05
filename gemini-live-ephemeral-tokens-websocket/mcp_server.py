@@ -575,6 +575,74 @@ def _composio_call_sync(tool_name, arguments):
     loop = asyncio.new_event_loop()
     try:
         result = loop.run_until_complete(client.call_tool(tool_name, arguments))
+        
+        # Auto-store tool call results in Cognee with date context
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # Create a human-readable summary based on tool type
+            if tool_name == "SLACK_SEND_MESSAGE":
+                channel = arguments.get("channel", "")
+                text = arguments.get("markdown_text", "") or arguments.get("message", "")
+                # Extract message ID from result if available
+                msg_ref = ""
+                try:
+                    result_data = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(result_data, dict) and "results" in result_data:
+                        msg_data = result_data["results"][0].get("response", {}).get("data", {})
+                        msg_ref = f"\nMessage ID: {msg_data.get('message', {}).get('ts', 'N/A')}"
+                except:
+                    pass
+                memory_text = f"On {date_str} at {timestamp}: Sent Slack message to channel '{channel}'\n\nFull message content:\n{text}{msg_ref}"
+            elif tool_name == "GMAIL_SEND_EMAIL":
+                to = arguments.get("to", "")
+                subject = arguments.get("subject", "")
+                body = arguments.get("body", "")
+                memory_text = f"On {date_str} at {timestamp}: Sent email\n\nTo: {to}\nSubject: {subject}\n\nFull email body:\n{body}"
+            elif tool_name == "GOOGLECALENDAR_CREATE_EVENT":
+                summary = arguments.get("summary", "") or arguments.get("title", "")
+                start = arguments.get("start_datetime", "")
+                end = arguments.get("end_datetime", "")
+                desc = arguments.get("description", "")
+                memory_text = f"On {date_str} at {timestamp}: Created calendar event\n\nEvent: {summary}\nStart: {start}\nEnd: {end}\nDescription: {desc}"
+            elif tool_name == "NOTION_CREATE_PAGE":
+                title = arguments.get("title", "")
+                content = arguments.get("content", "")
+                parent_id = arguments.get("parent_id", "")
+                memory_text = f"On {date_str} at {timestamp}: Created Notion page\n\nTitle: {title}\nParent ID: {parent_id}\n\nFull page content:\n{content}"
+            else:
+                # Generic format for other tools - include full result
+                memory_text = f"On {date_str} at {timestamp}: Executed tool '{tool_name}'\n\nArguments:\n{json.dumps(arguments, indent=2)}\n\nFull Result:\n{result}"
+            
+            # Store in Cognee via background thread
+            def _store():
+                try:
+                    headers = {
+                        "X-Api-Key": COGNEE_API_KEY,
+                        "X-Tenant-Id": COGNEE_TENANT_ID,
+                        "X-User-Id": COGNEE_USER_ID
+                    }
+                    requests.post(
+                        f"{COGNEE_BASE_URL}/api/v1/add_text",
+                        json={"textData": [memory_text], "datasetName": PERSISTENT_DATASET},
+                        headers=headers,
+                        timeout=30
+                    )
+                    requests.post(
+                        f"{COGNEE_BASE_URL}/api/v1/cognify",
+                        json={"datasets": [PERSISTENT_DATASET]},
+                        headers=headers,
+                        timeout=90
+                    )
+                    print(f"[MCP Auto-Store] Stored {tool_name} in Cognee")
+                except Exception as e:
+                    print(f"[MCP Auto-Store] Failed: {e}")
+            
+            threading.Thread(target=_store, daemon=True).start()
+        except Exception as e:
+            print(f"[MCP Auto-Store] Error: {e}")
+        
         return result
     finally:
         loop.close()

@@ -268,6 +268,23 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
           if (name === "gdrive_fetch_to_canvas") {
             onMessage?.({ type: "tool_result", data: { name, args, result } });
           }
+          
+          // Automatically store tool call results in Cognee memory
+          if (toggles["cognee-remember"] && result && !result.error) {
+            const timestamp = new Date().toISOString();
+            const memoryText = `[${timestamp}] Tool: ${name}\nArguments: ${JSON.stringify(args)}\nResult: ${JSON.stringify(result)}`;
+            
+            try {
+              await fetch(`${serverUrl}/api/cognee/remember`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: memoryText }),
+              });
+              console.log(`💾 Stored ${name} result in Cognee`);
+            } catch (memErr) {
+              console.warn(`Failed to store ${name} in Cognee:`, memErr);
+            }
+          }
         } catch (err) {
           console.error(`Tool ${name} failed:`, err);
           functionResponses.push({
