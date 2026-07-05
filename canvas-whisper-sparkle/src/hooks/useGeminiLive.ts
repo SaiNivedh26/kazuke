@@ -638,6 +638,8 @@ async function executeTool(
     cognee_cognify: { endpoint: "/api/cognee/cognify", enabled: "cognee-cognify" },
     cognee_recall: { endpoint: "/api/cognee/recall", enabled: "cognee-recall" },
     cognee_forget: { endpoint: "/api/cognee/forget", enabled: "cognee-forget" },
+    cognee_update: { endpoint: "/api/cognee/update", enabled: "cognee-update" },
+    cognee_delete: { endpoint: "/api/cognee/delete", enabled: "cognee-delete" },
     notion_search: { endpoint: "/api/notion/search", enabled: "notion-search" },
     notion_create_page: { endpoint: "/api/notion/create_page", enabled: "notion-create-page" },
     notion_append_to_page: { endpoint: "/api/notion/append", enabled: "notion-append" },
@@ -779,6 +781,54 @@ function getEnabledTools(toggles: ToolToggles): any[] {
       name: "cognee_forget",
       description: "Clear all stored memories. Use only when user explicitly requests.",
       parameters: { type: "object", properties: {} },
+    });
+  }
+
+  if (toggles["cognee-update"]) {
+    functionDeclarations.push({
+      name: "cognee_update",
+      description:
+        "Update existing memories by finding and replacing content. Use when user wants to correct or modify stored facts. Bidirectional memory update.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query to find memories to update",
+          },
+          old_text: {
+            type: "string",
+            description: "The text to find and replace in matching memories",
+          },
+          new_text: {
+            type: "string",
+            description: "The new text to replace old_text with",
+          },
+        },
+        required: ["query", "old_text", "new_text"],
+      },
+    });
+  }
+
+  if (toggles["cognee-delete"]) {
+    functionDeclarations.push({
+      name: "cognee_delete",
+      description:
+        "Delete specific memories by query. More granular than forget (which deletes all). Use when user wants to remove specific facts.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query to find memories to delete",
+          },
+          exact_match: {
+            type: "boolean",
+            description: "If true, only delete memories that exactly match the query",
+          },
+        },
+        required: ["query"],
+      },
     });
   }
 

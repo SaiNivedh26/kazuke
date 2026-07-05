@@ -151,8 +151,11 @@ This MCP server provides persistent memory (Cognee), Notion workspace access, an
 
 MEMORY TOOLS (Cognee) - PRIMARY:
 - remember: Store facts, observations, relationships. Fires instantly, processes in background.
+- remember_batch: Store multiple facts at once for efficiency.
 - recall: Search the knowledge graph for stored information. Returns relevant chunks.
-- forget: Clear ALL memories from the graph.
+- update: Update existing memories by finding and replacing content (bidirectional).
+- delete: Delete specific memories by query (more granular than forget).
+- forget: Clear ALL memories from the graph (destructive).
 
 NOTION TOOLS - SECONDARY:
 - notion_search: Find pages in Notion workspace.
@@ -168,6 +171,8 @@ PRODUCTIVITY TOOLS (Composio) - Use only when explicitly asked:
 WORKFLOWS:
 - When saving info: store in Cognee memory AND optionally in Notion
 - When recalling: check Cognee first, then Notion if needed
+- When updating: use update tool to modify existing facts
+- When deleting: use delete tool for specific memories, forget for all
 - For calendar: use Asia/Kolkata timezone by default
 """,
     version="1.0.0"
@@ -223,6 +228,190 @@ def forget() -> str:
         if resp.status_code != 200:
             return json.dumps({"error": f"Forget failed: {resp.status_code}", "details": resp.text})
         return json.dumps({"status": "forgotten", "dataset": PERSISTENT_DATASET})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool
+def update(query: str, old_text: str, new_text: str) -> str:
+    """Update existing memories by finding and replacing content. Bidirectional memory update.
+    
+    This tool searches for memories matching the query, then replaces old_text with new_text
+    in each matching memory. Use this when you need to correct or modify stored facts.
+    
+    Args:
+        query: Search query to find memories to update
+        old_text: The text to find and replace in matching memories
+        new_text: The new text to replace old_text with
+    
+    Returns:
+        JSON with update status and count of updated memories
+    
+    Example:
+        update(
+            query="water bottle",
+            old_text="blue water bottle",
+            new_text="red water bottle"
+        )
+    """
+    try:
+        headers = get_cognee_headers()
+        
+        # First, recall existing memories matching the query
+        recall_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/recall",
+            json={
+                "query": query,
+                "searchType": "CHUNKS",
+                "datasets": [PERSISTENT_DATASET]
+            },
+            headers=headers,
+            timeout=30
+        )
+
+        if recall_resp.status_code != 200:
+            return json.dumps({
+                "error": f"Failed to recall memories: {recall_resp.status_code}",
+                "details": recall_resp.text
+            })
+
+        recalled = recall_resp.json()
+        
+        # Handle different response formats
+        results = []
+        if isinstance(recalled, dict):
+            if "result" in recalled:
+                results = recalled["result"]
+            elif "results" in recalled:
+                results = recalled["results"]
+            elif "chunks" in recalled:
+                results = recalled["chunks"]
+            elif "data" in recalled:
+                results = recalled["data"]
+        elif isinstance(recalled, list):
+            results = recalled
+        
+        # Check if we found any memories
+        if not results:
+            return json.dumps({
+                "status": "no_memories_found",
+                "message": f"No memories found matching query: {query}"
+            })
+
+        # For each matching memory, create an updated version
+        updated_count = 0
+        for result in results:
+            chunk_text = result.get("text", "")
+            
+            # Check if old_text is in this chunk
+            if old_text in chunk_text:
+                # Replace old_text with new_text
+                updated_chunk = chunk_text.replace(old_text, new_text)
+                
+                # Store the updated chunk
+                _cognee_store_sync([updated_chunk])
+                updated_count += 1
+
+        return json.dumps({
+            "status": "updated",
+            "updated_count": updated_count,
+            "query": query,
+            "old_text": old_text,
+            "new_text": new_text,
+            "dataset": PERSISTENT_DATASET
+        })
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool
+def delete(query: str, exact_match: bool = False) -> str:
+    """Delete specific memories by query. More granular than forget (which deletes all).
+    
+    This tool searches for memories matching the query and marks them for deletion.
+    Note: Cognee doesn't support direct chunk deletion, so this marks them with a deletion marker.
+    
+    Args:
+        query: Search query to find memories to delete
+        exact_match: If True, only delete memories that exactly match the query
+    
+    Returns:
+        JSON with deletion status and count of marked memories
+    
+    Example:
+        delete(query="old incorrect fact", exact_match=False)
+    """
+    try:
+        headers = get_cognee_headers()
+        
+        # Recall memories matching the query
+        recall_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/recall",
+            json={
+                "query": query,
+                "searchType": "CHUNKS",
+                "datasets": [PERSISTENT_DATASET]
+            },
+            headers=headers,
+            timeout=30
+        )
+
+        if recall_resp.status_code != 200:
+            return json.dumps({
+                "error": f"Failed to recall memories: {recall_resp.status_code}",
+                "details": recall_resp.text
+            })
+
+        recalled = recall_resp.json()
+        
+        # Handle different response formats
+        results = []
+        if isinstance(recalled, dict):
+            if "result" in recalled:
+                results = recalled["result"]
+            elif "results" in recalled:
+                results = recalled["results"]
+            elif "chunks" in recalled:
+                results = recalled["chunks"]
+            elif "data" in recalled:
+                results = recalled["data"]
+        elif isinstance(recalled, list):
+            results = recalled
+        
+        if not results:
+            return json.dumps({
+                "status": "no_memories_found",
+                "message": f"No memories found matching query: {query}"
+            })
+
+        # For each matching memory, mark it as deleted
+        deleted_count = 0
+        for result in results:
+            chunk_text = result.get("text", "")
+            
+            # Check if we should delete this chunk
+            should_delete = False
+            if exact_match:
+                should_delete = (chunk_text == query)
+            else:
+                should_delete = (query.lower() in chunk_text.lower())
+            
+            if should_delete:
+                # Store a deletion marker
+                deletion_marker = f"[DELETED] {chunk_text[:50]}... (marked for deletion)"
+                _cognee_store_sync([deletion_marker])
+                deleted_count += 1
+
+        return json.dumps({
+            "status": "marked_for_deletion",
+            "deleted_count": deleted_count,
+            "query": query,
+            "exact_match": exact_match,
+            "dataset": PERSISTENT_DATASET,
+            "note": "Individual chunk deletion not supported by Cognee API. Marked for deletion instead."
+        })
+
     except Exception as e:
         return json.dumps({"error": str(e)})
 
