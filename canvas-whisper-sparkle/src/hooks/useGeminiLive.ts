@@ -258,7 +258,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         console.log(`🛠️ Tool call: ${name}`, args);
 
         try {
-          const result = await executeTool(name, args, toolToggles, serverUrl);
+          const result = await executeTool(name, args, toolToggles, serverUrl, onMessage);
           functionResponses.push({
             id,
             name,
@@ -338,7 +338,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
               },
             },
             systemInstruction: {
-              parts: [{ text: systemInstructions }],
+              parts: [{ text: systemInstructions + " When the session starts, greet the user briefly and ask how you can help them today." }],
             },
             tools: tools.length > 0 ? tools : undefined,
             realtimeInputConfig: {
@@ -355,6 +355,25 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         };
         console.log("📤 Setup message:", JSON.stringify(setupMsg, null, 2));
         ws.send(JSON.stringify(setupMsg));
+
+        // Send initial greeting prompt after setup
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                clientContent: {
+                  turns: [
+                    {
+                      parts: [{ text: "Hello! Please greet me and let me know you're ready to help." }],
+                      role: "user",
+                    },
+                  ],
+                  turnComplete: true,
+                },
+              }),
+            );
+          }
+        }, 1000);
       };
 
       ws.onmessage = async (event) => {
@@ -445,25 +464,19 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const sendVideo = useCallback((data: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const base64 = arrayBufferToBase64(data);
+      console.log(`📹 Sending video frame (${data.byteLength} bytes, base64 length: ${base64.length})`);
       wsRef.current.send(
         JSON.stringify({
-          clientContent: {
-            turns: [
-              {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: "image/jpeg",
-                      data: base64,
-                    },
-                  },
-                ],
-                role: "user",
-              },
-            ],
+          realtimeInput: {
+            video: {
+              mimeType: "image/jpeg",
+              data: base64,
+            },
           },
         }),
       );
+    } else {
+      console.warn("WebSocket not open, cannot send video");
     }
   }, []);
 
@@ -613,6 +626,7 @@ async function executeTool(
   args: any,
   toggles: ToolToggles,
   serverUrl: string,
+  onMessage?: (msg: GeminiMessage) => void,
 ): Promise<any> {
   // Map tool names to API endpoints
   const toolMap: Record<string, { endpoint: string; enabled: string }> = {
@@ -641,6 +655,8 @@ async function executeTool(
     gdrive_create_file_from_text: { endpoint: "/api/composio/call", enabled: "gdrive-create-text" },
     gdrive_create_folder: { endpoint: "/api/composio/call", enabled: "gdrive-create-folder" },
     gdrive_fetch_to_canvas: { endpoint: "/api/composio/call", enabled: "gdrive-fetch-to-canvas" },
+    canvas_list_files: { endpoint: "/api/canvas/files", enabled: "canvas-list-files" },
+    canvas_group_files: { endpoint: "/api/canvas/group", enabled: "canvas-group-files" },
   };
 
   const tool = toolMap[name];
@@ -670,6 +686,22 @@ async function executeTool(
       body: JSON.stringify(composioArgs),
     });
     return response.json();
+  }
+
+  // Canvas tools
+  if (name === "canvas_list_files") {
+    const response = await fetch(`${serverUrl}${tool.endpoint}`, { method: "GET" });
+    return response.json();
+  }
+  if (name === "canvas_group_files") {
+    const response = await fetch(`${serverUrl}${tool.endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const result = await response.json();
+    onMessage?.({ type: "tool_result", data: { name, args, result } });
+    return result;
   }
 
   // Regular tools
@@ -992,13 +1024,48 @@ function getEnabledTools(toggles: ToolToggles): any[] {
     functionDeclarations.push({
       name: "gdrive_fetch_to_canvas",
       description:
-        "Fetch a referenced Google Drive file's metadata onto the canvas UI so the user can see and open it. Use when the user says 'fetch this file to canvas' or references a file to display. Requires a file_id.",
+        "IMPORTANT: After using gdrive_find_file to find files, ALWAYS call this tool with the file_id to display them on the canvas. This is the final step to show files to the user. Use the file_id returned by gdrive_find_file.",
       parameters: {
         type: "object",
         properties: {
-          file_id: { type: "string", description: "Google Drive file id to fetch onto the canvas" },
+          file_id: { type: "string", description: "Google Drive file id to fetch onto the canvas (get this from gdrive_find_file results)" },
         },
         required: ["file_id"],
+      },
+    });
+  }
+
+  if (toggles["canvas-list-files"]) {
+    functionDeclarations.push({
+      name: "canvas_list_files",
+      description:
+        "List all files currently visible on the user's canvas. Returns canvas_id (use this for grouping), name, and type. IMPORTANT: Use the 'canvas_id' field when grouping files, NOT 'drive_file_id'.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    });
+  }
+
+  if (toggles["canvas-group-files"]) {
+    functionDeclarations.push({
+      name: "canvas_group_files",
+      description:
+        "Group specific files on the canvas into a named context. Use after listing files. The context is stored in persistent memory for later recall by coding agents. IMPORTANT: file_ids must be the 'canvas_id' values from canvas_list_files, NOT 'drive_file_id'.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of canvas_id values (from canvas_list_files) to group together (minimum 2)",
+          },
+          context_name: {
+            type: "string",
+            description: "A short, descriptive name for this context group (2-5 words)",
+          },
+        },
+        required: ["file_ids"],
       },
     });
   }

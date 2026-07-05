@@ -192,6 +192,24 @@ const SECTIONS: {
     ],
   },
   {
+    title: "Canvas Context Tools",
+    description: "Agent can see and group canvas files into named contexts stored in Cognee",
+    tools: [
+      {
+        id: "canvas-list-files",
+        label: "List Canvas Files",
+        description: "See what files are on the canvas",
+        defaultOn: true,
+      },
+      {
+        id: "canvas-group-files",
+        label: "Group Files Into Context",
+        description: "Group files into a named context, persisted to Cognee",
+        defaultOn: true,
+      },
+    ],
+  },
+  {
     title: "Transcription Settings",
     tools: [
       {

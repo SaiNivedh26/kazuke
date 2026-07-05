@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState, useCallback, useEffect } from "react";
+import { lazy, Suspense, useRef, useState, useCallback, useEffect, useMemo } from "react";
 import {
   Link2,
   Mic,
@@ -12,10 +12,17 @@ import {
   Monitor,
   Camera,
   CameraOff,
+  MousePointer2,
+  Group,
+  Pencil,
 } from "lucide-react";
 import { VoiceAura, type AuraState } from "./VoiceAura";
 import { ToolsDrawer } from "./ToolsDrawer";
 import { KnowledgeGraphDialog } from "./KnowledgeGraphDialog";
+import { ContextGroupBadge, type ContextGroup } from "./ContextGroupBadge";
+import { ContextGroupOverlay } from "./ContextGroupOverlay";
+import { ContextAnalysisLoader } from "./ContextAnalysisLoader";
+import { StatefulButton } from "./ui/stateful-button";
 import { useGeminiLive, type ToolToggles, type GeminiMessage } from "@/hooks/useGeminiLive";
 import addFilesSvg from "@/assets/add_files.svg";
 import docReadySvg from "@/assets/doc_ready.svg";
@@ -78,6 +85,8 @@ export function CanvasWorkspace() {
       "gdrive-create-text",
       "gdrive-create-folder",
       "gdrive-fetch-to-canvas",
+      "canvas-list-files",
+      "canvas-group-files",
     ];
     for (const id of toolIds) {
       initial[id] = true;
@@ -89,10 +98,19 @@ export function CanvasWorkspace() {
   const [linkCount, setLinkCount] = useState(2);
   const [muted, setMuted] = useState(true);
   const [cameraOn, setCameraOn] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [kbActive, setKbActive] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState<string | null>(null);
   const [previewUpload, setPreviewUpload] = useState<Upload | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false);
+  const [contextGroups, setContextGroups] = useState<ContextGroup[]>([]);
+  const [groupingState, setGroupingState] = useState<"idle" | "loading" | "success">("idle");
+  const [pendingGroup, setPendingGroup] = useState<ContextGroup | null>(null);
+  const [analysisBounds, setAnalysisBounds] = useState<{ x: number; y: number; width: number; height: number; count: number } | null>(null);
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const dragRef = useRef<{
     id: string;
     startX: number;
@@ -102,6 +120,10 @@ export function CanvasWorkspace() {
   } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenIntervalRef = useRef<number | null>(null);
+  const agentStateRef = useRef<AuraState>("connecting");
+  const screenSharingPausedRef = useRef<boolean>(false);
 
   // Gemini Live hook
   const {
@@ -109,21 +131,42 @@ export function CanvasWorkspace() {
     agentState: geminiAgentState,
     connect,
     disconnect,
+    sendVideo,
     error,
   } = useGeminiLive({
     serverUrl: "http://localhost:8000",
     toolToggles,
     systemInstructions:
-      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone. You have access to Google Drive: you can find, fetch, and read files the user references, and bring a file onto the canvas when asked.",
+      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and screen sharing, and hear through the microphone. IMPORTANT: When viewing the screen, observe passively unless the user explicitly asks you to do something with what you see. Do NOT automatically search for files, take actions, or respond to text you see on screen unless the user specifically asks. Only act when the user speaks to you or gives a clear command. You have access to Google Drive tools: use gdrive_find_file to search for files, then use gdrive_fetch_to_canvas to bring them onto the canvas. When the user asks to see or open files, ALWAYS use gdrive_fetch_to_canvas after finding them. You can also see what files are on the user's canvas using canvas_list_files, and group files into named contexts using canvas_group_files. CRITICAL: Never guess or make up file names. Only search for files that are explicitly named by the user. If uncertain about a file name, ask the user to clarify. When grouping canvas files, always call canvas_list_files first. These contexts are stored in persistent memory for later recall.",
     onMessage: (msg: GeminiMessage) => {
       console.log("Gemini message:", msg.type);
+      
+      // Pause screen sharing when tool calls happen
+      if (msg.type === "tool_call") {
+        screenSharingPausedRef.current = true;
+        console.log("📹 Pausing screen sharing due to tool call");
+      }
+      
+      // Resume screen sharing after turn is complete
+      if (msg.type === "turn_complete") {
+        screenSharingPausedRef.current = false;
+        console.log("📹 Resuming screen sharing after turn complete");
+      }
+      
       if (msg.type === "tool_result" && msg.data?.name === "gdrive_fetch_to_canvas") {
         const result = msg.data?.result;
+        console.log("[gdrive_fetch_to_canvas] Full result:", JSON.stringify(result, null, 2));
+        
         const meta = result?.result && typeof result.result === "object" ? result.result : result;
+        console.log("[gdrive_fetch_to_canvas] Extracted meta:", JSON.stringify(meta, null, 2));
+        
         const fileName = meta?.name ?? "Fetched file";
         const webViewLink = meta?.webViewLink ?? meta?.display_url;
         const fileId = meta?.id;
         const mimeType = meta?.mimeType;
+        
+        console.log("[gdrive_fetch_to_canvas] Extracted fields:", { fileName, webViewLink, fileId, mimeType });
+        
         const rect = canvasRef.current?.getBoundingClientRect();
         const w = rect?.width ?? window.innerWidth;
         const h = rect?.height ?? window.innerHeight;
@@ -134,10 +177,22 @@ export function CanvasWorkspace() {
           ...u,
           { id, x, y, status: "loading", fileName, webViewLink, fileId, mimeType },
         ]);
-        // Resolve the loading animation after a short delay to mimic fetch.
         setTimeout(() => {
           setUploads((u) => u.map((up) => (up.id === id ? { ...up, status: "ready" } : up)));
         }, 1800);
+      }
+      if (msg.type === "tool_result" && msg.data?.name === "canvas_group_files") {
+        const result = msg.data?.result;
+        if (result && !result.error) {
+          const newGroup: ContextGroup = {
+            id: result.context_id,
+            name: result.context_name,
+            fileIds: result.file_ids || [],
+            color: GROUP_COLORS[contextGroups.length % GROUP_COLORS.length],
+            createdAt: Date.now(),
+          };
+          setContextGroups((prev) => [...prev, newGroup]);
+        }
       }
     },
     onError: (err: Error) => {
@@ -145,6 +200,11 @@ export function CanvasWorkspace() {
       setStatus("failure");
     },
   });
+
+  // Keep agentStateRef in sync with the hook's agent state
+  useEffect(() => {
+    agentStateRef.current = geminiAgentState;
+  }, [geminiAgentState]);
 
   // Update status based on connection state
   useEffect(() => {
@@ -155,12 +215,108 @@ export function CanvasWorkspace() {
     }
   }, [connectionState]);
 
+  // Sync canvas files to server for agent tool access
+  useEffect(() => {
+    const readyFiles = uploads
+      .filter((u) => u.status === "ready")
+      .map((u) => ({
+        id: u.id,
+        fileName: u.fileName,
+        fileId: u.fileId,
+        mimeType: u.mimeType,
+      }));
+    fetch("http://localhost:8000/api/canvas/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: readyFiles }),
+    }).catch(() => {});
+  }, [uploads]);
+
   // Use Gemini's agent state when connected, otherwise use local state
   const agentState = connectionState === "connected" ? geminiAgentState : "connecting";
 
   // Handle toggle updates from ToolsDrawer
   const handleToggleChange = useCallback((id: string, checked: boolean) => {
     setToolToggles((prev) => ({ ...prev, [id]: checked }));
+  }, []);
+
+  // Screen sharing functions
+  const startScreenSharing = useCallback(() => {
+    if (typeof navigator === "undefined" || !("mediaDevices" in navigator)) {
+      console.error("Screen sharing not supported");
+      return;
+    }
+
+    navigator.mediaDevices
+      .getDisplayMedia({ video: true })
+      .then((stream) => {
+        screenStreamRef.current = stream;
+        setScreenSharing(true);
+
+        // Create a video element to capture frames
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.play();
+
+        // Wait for video to be ready before capturing
+        video.onloadedmetadata = () => {
+          console.log("Screen sharing video loaded");
+
+          // Capture frames at 1 frame every 3 seconds, but only when agent is listening and not paused
+          screenIntervalRef.current = window.setInterval(() => {
+            // Only send frames when agent is in listening state and screen sharing is not paused
+            if (video.readyState === video.HAVE_ENOUGH_DATA && agentStateRef.current === "listening" && !screenSharingPausedRef.current) {
+              const canvas = document.createElement("canvas");
+              canvas.width = 1280;
+              canvas.height = 720;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((blob) => {
+                  if (blob) {
+                    blob.arrayBuffer().then((buffer) => {
+                      console.log("Sending screen frame to Gemini");
+                      sendVideo(buffer);
+                    });
+                  }
+                }, "image/jpeg", 0.7);
+              }
+            }
+          }, 3000);
+        };
+
+        // Handle stream ending (user clicks "Stop sharing")
+        stream.getVideoTracks()[0].onended = () => {
+          stopScreenSharing();
+        };
+      })
+      .catch((err) => {
+        console.error("Screen sharing error:", err);
+      });
+  }, [sendVideo]);
+
+  const stopScreenSharing = useCallback(() => {
+    if (screenIntervalRef.current) {
+      clearInterval(screenIntervalRef.current);
+      screenIntervalRef.current = null;
+    }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+    setScreenSharing(false);
+  }, []);
+
+  // Cleanup screen sharing on unmount
+  useEffect(() => {
+    return () => {
+      if (screenIntervalRef.current) {
+        clearInterval(screenIntervalRef.current);
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
   }, []);
 
   const handleFiles = (files: FileList | null) => {
@@ -212,6 +368,152 @@ export function CanvasWorkspace() {
 
   const removeUpload = (id: string) => {
     setUploads((u) => u.filter((up) => up.id !== id));
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleFileSelection = (id: string, multiSelect: boolean) => {
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev);
+      if (multiSelect) {
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+      } else {
+        if (next.has(id) && next.size === 1) {
+          next.clear();
+        } else {
+          next.clear();
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const GROUP_COLORS = ["#8B5CF6", "#EC4899", "#F59E0B", "#10B981", "#3B82F6", "#EF4444"];
+
+  const calculateGroupBounds = (fileIds: string[]) => {
+    const groupFiles = uploads.filter((u) => fileIds.includes(u.id));
+    if (groupFiles.length === 0) return null;
+    const minX = Math.min(...groupFiles.map((f) => f.x));
+    const minY = Math.min(...groupFiles.map((f) => f.y));
+    const maxX = Math.max(...groupFiles.map((f) => f.x + 96));
+    const maxY = Math.max(...groupFiles.map((f) => f.y + 96));
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  };
+
+  const handleGroupFiles = async () => {
+    if (selectedFileIds.size < 2) return;
+    const fileIds = Array.from(selectedFileIds);
+    
+    const groupFiles = uploads.filter((u) => fileIds.includes(u.id));
+    const minX = Math.min(...groupFiles.map((f) => f.x));
+    const minY = Math.min(...groupFiles.map((f) => f.y));
+    const maxX = Math.max(...groupFiles.map((f) => f.x + 96));
+    const maxY = Math.max(...groupFiles.map((f) => f.y + 96));
+    
+    setAnalysisBounds({ x: minX, y: minY, width: maxX - minX, height: maxY - minY, count: fileIds.length });
+    setGroupingState("loading");
+    
+    try {
+      const fileData = groupFiles.map((f) => ({
+        id: f.id,
+        name: f.fileName,
+        fileId: f.fileId,
+        mimeType: f.mimeType,
+      }));
+
+      const response = await fetch("http://localhost:8000/api/context/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: fileData }),
+      });
+
+      if (!response.ok) throw new Error("Failed to create context");
+      
+      const data = await response.json();
+      const contextName = data.context_name || `Context ${contextGroups.length + 1}`;
+      
+      const newGroup: ContextGroup = {
+        id: data.context_id || `group-${Date.now()}`,
+        name: contextName,
+        fileIds,
+        color: GROUP_COLORS[contextGroups.length % GROUP_COLORS.length],
+        createdAt: Date.now(),
+      };
+
+      setPendingGroup(newGroup);
+      setAnalysisBounds(null);
+      setGroupingState("success");
+      
+      setTimeout(() => {
+        setContextGroups((prev) => [...prev, newGroup]);
+        setSelectedFileIds(new Set());
+        setSelectMode(false);
+        setGroupingState("idle");
+        setPendingGroup(null);
+      }, 1500);
+    } catch (err) {
+      console.error("Group creation failed:", err);
+      setAnalysisBounds(null);
+      setGroupingState("idle");
+    }
+  };
+
+  const handleRenameContext = async (groupId: string) => {
+    if (!renameValue.trim()) {
+      setRenamingGroupId(null);
+      return;
+    }
+    try {
+      await fetch("http://localhost:8000/api/context/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context_id: groupId, name: renameValue.trim() }),
+      });
+      setContextGroups((prev) =>
+        prev.map((g) => (g.id === groupId ? { ...g, name: renameValue.trim() } : g)),
+      );
+    } catch (err) {
+      console.error("Rename failed:", err);
+    }
+    setRenamingGroupId(null);
+    setRenameValue("");
+  };
+
+  const handleAgentGroupFiles = useCallback(async (fileIds: string[], contextName?: string) => {
+    try {
+      const response = await fetch("http://localhost:8000/api/canvas/group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_ids: fileIds, context_name: contextName }),
+      });
+      if (!response.ok) throw new Error("Agent group failed");
+      const data = await response.json();
+      
+      const newGroup: ContextGroup = {
+        id: data.context_id,
+        name: data.context_name,
+        fileIds,
+        color: GROUP_COLORS[contextGroups.length % GROUP_COLORS.length],
+        createdAt: Date.now(),
+      };
+      setContextGroups((prev) => [...prev, newGroup]);
+      return data;
+    } catch (err) {
+      console.error("Agent group error:", err);
+      return { error: (err as Error).message };
+    }
+  }, [contextGroups.length]);
+
+  const removeContextGroup = (groupId: string) => {
+    setContextGroups((prev) => prev.filter((g) => g.id !== groupId));
   };
 
   const handleDragStart = (id: string, clientX: number, clientY: number) => {
@@ -273,55 +575,205 @@ export function CanvasWorkspace() {
 
       {/* Upload overlays — draggable */}
       <div className="absolute inset-0 z-30 pointer-events-none">
-        {uploads.map((u) => (
+        {uploads.map((u) => {
+          const isSelected = selectedFileIds.has(u.id);
+          const group = contextGroups.find((g) => g.fileIds.includes(u.id));
+          return (
+            <div
+              key={u.id}
+              className={`absolute pointer-events-auto ${dragging === u.id ? "z-50 cursor-grabbing" : "cursor-grab"} ${selectMode ? "cursor-pointer" : ""}`}
+              style={{ left: u.x, top: u.y, width: 96, height: 96 }}
+              title={u.status === "ready" ? (u.fileName ?? "Uploaded file") : undefined}
+              onClick={(e) => {
+                if (selectMode && u.status === "ready") {
+                  e.stopPropagation();
+                  toggleFileSelection(u.id, e.shiftKey || e.metaKey);
+                }
+              }}
+              onDoubleClick={(e) => {
+                if (!selectMode && u.status === "ready" && u.webViewLink) {
+                  e.preventDefault();
+                  setPreviewUpload(u);
+                }
+              }}
+              onMouseDown={(e) => {
+                if (!selectMode) {
+                  e.preventDefault();
+                  handleDragStart(u.id, e.clientX, e.clientY);
+                }
+              }}
+              onTouchStart={(e) => {
+                if (!selectMode) {
+                  const t = e.touches[0];
+                  if (t) handleDragStart(u.id, t.clientX, t.clientY);
+                }
+              }}
+            >
+              {u.status === "loading" ? (
+                <Suspense fallback={null}>
+                  <LottieLoader data={loadingLottieData} />
+                </Suspense>
+              ) : (
+                <div className={`relative group ${isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background rounded-lg" : ""}`}>
+                  <img
+                    src={docReadySvg}
+                    alt={u.fileName ?? "Document ready"}
+                    className="w-24 h-24 drop-shadow-lg pointer-events-none"
+                  />
+                  {group && (
+                    <div
+                      className="absolute -top-1 -left-1 w-4 h-4 rounded-full border-2 border-background"
+                      style={{ backgroundColor: group.color }}
+                    />
+                  )}
+                  {u.fileName && (
+                    <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 max-w-[160px] truncate text-[10px] font-medium text-muted-foreground bg-card/90 border border-border rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                      {u.fileName}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeUpload(u.id);
+                    }}
+                    className="absolute -top-2 -right-2 h-5 w-5 rounded-full bg-background border border-border shadow flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Context group overlays */}
+      {contextGroups.map((group) => {
+        const bounds = calculateGroupBounds(group.fileIds);
+        if (!bounds) return null;
+        return (
+          <ContextGroupOverlay
+            key={group.id}
+            group={group}
+            bounds={bounds}
+          />
+        );
+      })}
+
+      {/* Context group badges */}
+      {contextGroups.map((group) => {
+        const bounds = calculateGroupBounds(group.fileIds);
+        if (!bounds) return null;
+        const isRenaming = renamingGroupId === group.id;
+        return (
           <div
-            key={u.id}
-            className={`absolute pointer-events-auto ${dragging === u.id ? "z-50 cursor-grabbing" : "cursor-grab"}`}
-            style={{ left: u.x, top: u.y, width: 96, height: 96 }}
-            title={u.status === "ready" ? (u.fileName ?? "Uploaded file") : undefined}
-            onDoubleClick={(e) => {
-              if (u.status === "ready" && u.webViewLink) {
-                e.preventDefault();
-                setPreviewUpload(u);
-              }
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              handleDragStart(u.id, e.clientX, e.clientY);
-            }}
-            onTouchStart={(e) => {
-              const t = e.touches[0];
-              if (t) handleDragStart(u.id, t.clientX, t.clientY);
-            }}
+            key={group.id}
+            className="absolute z-40 pointer-events-auto"
+            style={{ left: bounds.x + bounds.width / 2 - 70, top: bounds.y - 48 }}
           >
-            {u.status === "loading" ? (
-              <Suspense fallback={null}>
-                <LottieLoader data={loadingLottieData} />
-              </Suspense>
-            ) : (
-              <div className="relative group">
-                <img
-                  src={docReadySvg}
-                  alt={u.fileName ?? "Document ready"}
-                  className="w-24 h-24 drop-shadow-lg pointer-events-none"
+            {isRenaming ? (
+              <div className="flex items-center gap-1.5 animate-in fade-in slide-in-from-top-1 duration-200">
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRenameContext(group.id);
+                    if (e.key === "Escape") { setRenamingGroupId(null); setRenameValue(""); }
+                  }}
+                  className="h-7 w-32 rounded-full bg-card/95 backdrop-blur-md border px-3 text-xs font-medium text-foreground outline-none focus:border-primary"
+                  style={{ borderColor: group.color }}
+                  placeholder="New name..."
                 />
-                {u.fileName && (
-                  <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 max-w-[160px] truncate text-[10px] font-medium text-muted-foreground bg-card/90 border border-border rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                    {u.fileName}
-                  </div>
-                )}
                 <button
                   type="button"
-                  onClick={() => removeUpload(u.id)}
-                  className="absolute -top-2 -right-2 h-5 w-5 rounded-full bg-background border border-border shadow flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
+                  onClick={() => handleRenameContext(group.id)}
+                  className="h-6 w-6 rounded-full bg-emerald-500/20 text-emerald-500 grid place-items-center hover:bg-emerald-500/30 transition-colors"
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRenamingGroupId(null); setRenameValue(""); }}
+                  className="h-6 w-6 rounded-full bg-destructive/10 text-destructive grid place-items-center hover:bg-destructive/20 transition-colors"
                 >
                   <X className="w-3 h-3" />
                 </button>
               </div>
+            ) : (
+              <ContextGroupBadge
+                group={group}
+                x={0}
+                y={0}
+                onRemove={() => removeContextGroup(group.id)}
+                onClick={() => {
+                  setRenamingGroupId(group.id);
+                  setRenameValue(group.name);
+                }}
+              />
             )}
           </div>
-        ))}
-      </div>
+        );
+      })}
+
+      {/* Pending group badge (during creation) */}
+      {pendingGroup && (() => {
+        const bounds = calculateGroupBounds(pendingGroup.fileIds);
+        if (!bounds) return null;
+        return (
+          <>
+            <ContextGroupOverlay group={pendingGroup} bounds={bounds} />
+            <ContextGroupBadge
+              group={pendingGroup}
+              x={bounds.x + bounds.width / 2 - 50}
+              y={bounds.y - 40}
+            />
+          </>
+        );
+      })()}
+
+      {/* Analysis loader (during Gemini analysis) */}
+      {analysisBounds && (
+        <ContextAnalysisLoader
+          x={analysisBounds.x}
+          y={analysisBounds.y}
+          width={analysisBounds.width}
+          height={analysisBounds.height}
+          fileCount={analysisBounds.count}
+          color={GROUP_COLORS[contextGroups.length % GROUP_COLORS.length]}
+        />
+      )}
+
+      {/* Group action button */}
+      {selectMode && selectedFileIds.size >= 2 && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50">
+          <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-card/95 backdrop-blur-md border border-border shadow-lg">
+            <span className="text-sm font-medium text-foreground">
+              {selectedFileIds.size} files selected
+            </span>
+            <StatefulButton
+              state={groupingState}
+              onClick={handleGroupFiles}
+              loadingText="Analyzing..."
+              successText="Grouped!"
+            >
+              <Group className="w-4 h-4" />
+              Group into context
+            </StatefulButton>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedFileIds(new Set());
+                setSelectMode(false);
+              }}
+              className="h-8 w-8 rounded-lg grid place-items-center hover:bg-destructive/10 hover:text-destructive transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Top: Connection Status */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40">
@@ -451,6 +903,22 @@ export function CanvasWorkspace() {
 
         <button
           type="button"
+          onClick={() => {
+            setSelectMode((v) => !v);
+            setSelectedFileIds(new Set());
+          }}
+          className={`h-12 w-12 rounded-xl grid place-items-center shadow-sm active:scale-95 transition-all ${
+            selectMode
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-background border border-border hover:border-primary/40 hover:bg-accent"
+          }`}
+          aria-label="Toggle select mode"
+        >
+          <MousePointer2 className="w-5 h-5" />
+        </button>
+
+        <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
           className="h-12 w-12 rounded-xl grid place-items-center bg-background border border-border hover:border-primary/40 hover:bg-accent shadow-sm active:scale-95 transition-all"
           aria-label="Upload files"
@@ -461,17 +929,20 @@ export function CanvasWorkspace() {
         <button
           type="button"
           onClick={() => {
-            if (typeof navigator !== "undefined" && "mediaDevices" in navigator) {
-              navigator.mediaDevices
-                .getDisplayMedia({ video: true })
-                .then(() => {})
-                .catch(() => {});
+            if (screenSharing) {
+              stopScreenSharing();
+            } else {
+              startScreenSharing();
             }
           }}
-          className="h-12 w-12 rounded-xl grid place-items-center bg-background border border-border hover:border-primary/40 hover:bg-accent shadow-sm active:scale-95 transition-all"
-          aria-label="Share screen"
+          className={`h-12 w-12 rounded-xl grid place-items-center shadow-sm active:scale-95 transition-all ${
+            screenSharing
+              ? "bg-red-500 text-white border-red-500 hover:bg-red-600"
+              : "bg-background border border-border hover:border-primary/40 hover:bg-accent"
+          }`}
+          aria-label={screenSharing ? "Stop screen sharing" : "Share screen"}
         >
-          <Monitor className="w-5 h-5 text-foreground" />
+          <Monitor className="w-5 h-5" />
         </button>
 
         <button
