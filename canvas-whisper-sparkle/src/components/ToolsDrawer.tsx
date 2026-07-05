@@ -151,6 +151,47 @@ const SECTIONS: {
     ],
   },
   {
+    title: "Google Drive MCP Tools",
+    tools: [
+      {
+        id: "gdrive-find",
+        label: "Find File",
+        description: "Search Drive files by name",
+        defaultOn: true,
+      },
+      {
+        id: "gdrive-get-meta",
+        label: "Get File Metadata",
+        description: "Get Drive file metadata + webViewLink",
+        defaultOn: true,
+      },
+      {
+        id: "gdrive-download",
+        label: "Download File",
+        description: "Download a Drive file by id",
+        defaultOn: true,
+      },
+      {
+        id: "gdrive-create-text",
+        label: "Create Text File",
+        description: "Create a text file in Drive",
+        defaultOn: true,
+      },
+      {
+        id: "gdrive-create-folder",
+        label: "Create Folder",
+        description: "Create a folder in Drive",
+        defaultOn: true,
+      },
+      {
+        id: "gdrive-fetch-to-canvas",
+        label: "Fetch File To Canvas",
+        description: "Bring a Drive file onto the canvas",
+        defaultOn: true,
+      },
+    ],
+  },
+  {
     title: "Transcription Settings",
     tools: [
       {

@@ -15,6 +15,7 @@ export type MessageType =
   | "input_transcription"
   | "output_transcription"
   | "tool_call"
+  | "tool_result"
   | "turn_complete"
   | "setup_complete"
   | "interrupted"
@@ -55,13 +56,7 @@ interface WSMessage {
 }
 
 export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveReturn {
-  const {
-    serverUrl = "",
-    toolToggles,
-    systemInstructions = "",
-    onMessage,
-    onError,
-  } = options;
+  const { serverUrl = "", toolToggles, systemInstructions = "", onMessage, onError } = options;
 
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [agentState, setAgentState] = useState<AuraState>("connecting");
@@ -123,14 +118,11 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
       // Load the audio worklet
       await playbackContextRef.current.audioWorklet.addModule(
-        "/audio-processors/playback.worklet.js"
+        "/audio-processors/playback.worklet.js",
       );
 
       // Create worklet node
-      workletNodeRef.current = new AudioWorkletNode(
-        playbackContextRef.current,
-        "pcm-processor"
-      );
+      workletNodeRef.current = new AudioWorkletNode(playbackContextRef.current, "pcm-processor");
 
       // Connect to output
       workletNodeRef.current.connect(playbackContextRef.current.destination);
@@ -146,7 +138,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const stopPlayback = useCallback(() => {
     console.log("🔇 Stopping playback");
     isPlayingRef.current = false;
-    
+
     // Send interrupt message to worklet
     if (workletNodeRef.current) {
       workletNodeRef.current.port.postMessage("interrupt");
@@ -154,62 +146,65 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   }, []);
 
   // Handle incoming messages
-  const handleMessage = useCallback((jsonData: string) => {
-    try {
-      const data = JSON.parse(jsonData);
-      const messages = parseMessages(data);
+  const handleMessage = useCallback(
+    (jsonData: string) => {
+      try {
+        const data = JSON.parse(jsonData);
+        const messages = parseMessages(data);
 
-      for (const msg of messages) {
-        switch (msg.type) {
-          case "setup_complete":
-            console.log("✅ Setup complete");
-            setAgentState("listening");
-            isCapturingRef.current = true;
-            break;
-          case "turn_complete":
-            console.log("✅ Turn complete");
-            setAgentState("listening");
-            isCapturingRef.current = true;
-            stopRetrievalMusic();
-            break;
-          case "audio":
-            setAgentState("speaking");
-            isCapturingRef.current = false;
-            stopRetrievalMusic();
-            playAudio(msg.data);
-            break;
-          case "input_transcription":
-            setAgentState("listening");
-            break;
-          case "output_transcription":
-            setAgentState("speaking");
-            stopRetrievalMusic();
-            break;
-          case "interrupted":
-            console.log("🗣️ Interrupted! Stopping playback");
-            stopPlayback();
-            stopRetrievalMusic();
-            setAgentState("listening");
-            isCapturingRef.current = true;
-            break;
-          case "tool_call":
-            setAgentState("thinking");
-            isCapturingRef.current = false;
-            playRetrievalMusic();
-            handleToolCall(msg.data);
-            break;
-          case "error":
-            setError(msg.data?.error || "Unknown error");
-            stopRetrievalMusic();
-            break;
+        for (const msg of messages) {
+          switch (msg.type) {
+            case "setup_complete":
+              console.log("✅ Setup complete");
+              setAgentState("listening");
+              isCapturingRef.current = true;
+              break;
+            case "turn_complete":
+              console.log("✅ Turn complete");
+              setAgentState("listening");
+              isCapturingRef.current = true;
+              stopRetrievalMusic();
+              break;
+            case "audio":
+              setAgentState("speaking");
+              isCapturingRef.current = false;
+              stopRetrievalMusic();
+              playAudio(msg.data);
+              break;
+            case "input_transcription":
+              setAgentState("listening");
+              break;
+            case "output_transcription":
+              setAgentState("speaking");
+              stopRetrievalMusic();
+              break;
+            case "interrupted":
+              console.log("🗣️ Interrupted! Stopping playback");
+              stopPlayback();
+              stopRetrievalMusic();
+              setAgentState("listening");
+              isCapturingRef.current = true;
+              break;
+            case "tool_call":
+              setAgentState("thinking");
+              isCapturingRef.current = false;
+              playRetrievalMusic();
+              handleToolCall(msg.data);
+              break;
+            case "error":
+              setError(msg.data?.error || "Unknown error");
+              stopRetrievalMusic();
+              break;
+          }
+
+          onMessage?.(msg);
         }
-
-        onMessage?.(msg);
+      } catch (err) {
+        console.error("Error parsing message:", err);
       }
-    } catch (err) {
-      console.error("Error parsing message:", err);
-    }
-  }, [onMessage, stopPlayback, stopRetrievalMusic, playRetrievalMusic]);
+    },
+    [onMessage, stopPlayback, stopRetrievalMusic, playRetrievalMusic],
+  );
 
   // Play audio response
   const playAudio = useCallback(async (base64Audio: string) => {
@@ -235,7 +230,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      
+
       // Convert PCM16 to float32
       const pcm16 = new Int16Array(bytes.buffer);
       const float32 = new Float32Array(pcm16.length);
@@ -252,41 +247,50 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   }, []);
 
   // Handle tool calls
-  const handleToolCall = useCallback(async (toolCall: any) => {
-    if (!toolCall?.functionCalls) return;
+  const handleToolCall = useCallback(
+    async (toolCall: any) => {
+      if (!toolCall?.functionCalls) return;
 
-    const functionResponses: any[] = [];
+      const functionResponses: any[] = [];
 
-    for (const fc of toolCall.functionCalls) {
-      const { name, args, id } = fc;
-      console.log(`🛠️ Tool call: ${name}`, args);
+      for (const fc of toolCall.functionCalls) {
+        const { name, args, id } = fc;
+        console.log(`🛠️ Tool call: ${name}`, args);
 
-      try {
-        const result = await executeTool(name, args, toolToggles, serverUrl);
-        functionResponses.push({
-          id,
-          name,
-          response: result,
-        });
-      } catch (err) {
-        console.error(`Tool ${name} failed:`, err);
-        functionResponses.push({
-          id,
-          name,
-          response: { error: err.message },
-        });
+        try {
+          const result = await executeTool(name, args, toolToggles, serverUrl);
+          functionResponses.push({
+            id,
+            name,
+            response: result,
+          });
+          // Surface fetch-to-canvas results to the UI so it can render the upload item.
+          if (name === "gdrive_fetch_to_canvas") {
+            onMessage?.({ type: "tool_result", data: { name, args, result } });
+          }
+        } catch (err) {
+          console.error(`Tool ${name} failed:`, err);
+          functionResponses.push({
+            id,
+            name,
+            response: { error: (err as Error).message },
+          });
+        }
       }
-    }
 
-    // Send responses back
-    if (functionResponses.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        toolResponse: {
-          functionResponses,
-        },
-      }));
-    }
-  }, [toolToggles, serverUrl]);
+      // Send responses back
+      if (functionResponses.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            toolResponse: {
+              functionResponses,
+            },
+          }),
+        );
+      }
+    },
+    [toolToggles, serverUrl, onMessage],
+  );
 
   // Connect to server
   const connect = useCallback(async () => {
@@ -384,7 +388,6 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       console.log("🎤 Starting audio capture...");
       await startAudioCapture();
       console.log("✅ Audio capture started");
-
     } catch (err) {
       console.error("❌ Connection failed:", err);
       setError(err.message);
@@ -398,21 +401,21 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     stopAudioCapture();
     stopPlayback();
     stopRetrievalMusic();
-    
+
     // Clean up worklet
     if (workletNodeRef.current) {
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
     }
-    
+
     // Clean up playback context
     if (playbackContextRef.current) {
       playbackContextRef.current.close();
       playbackContextRef.current = null;
     }
-    
+
     isInitializedRef.current = false;
-    
+
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -425,14 +428,16 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const sendAudio = useCallback((data: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const base64 = arrayBufferToBase64(data);
-      wsRef.current.send(JSON.stringify({
-        realtimeInput: {
-          audio: {
-            mimeType: "audio/pcm",
-            data: base64,
+      wsRef.current.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: {
+              mimeType: "audio/pcm",
+              data: base64,
+            },
           },
-        },
-      }));
+        }),
+      );
     }
   }, []);
 
@@ -440,30 +445,38 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const sendVideo = useCallback((data: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const base64 = arrayBufferToBase64(data);
-      wsRef.current.send(JSON.stringify({
-        clientContent: {
-          turns: [{
-            parts: [{
-              inlineData: {
-                mimeType: "image/jpeg",
-                data: base64,
+      wsRef.current.send(
+        JSON.stringify({
+          clientContent: {
+            turns: [
+              {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "image/jpeg",
+                      data: base64,
+                    },
+                  },
+                ],
+                role: "user",
               },
-            }],
-            role: "user",
-          }],
-        },
-      }));
+            ],
+          },
+        }),
+      );
     }
   }, []);
 
   // Send tool response
   const sendToolResponse = useCallback((functionResponses: any[]) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        toolResponse: {
-          functionResponses,
-        },
-      }));
+      wsRef.current.send(
+        JSON.stringify({
+          toolResponse: {
+            functionResponses,
+          },
+        }),
+      );
     }
   }, []);
 
@@ -498,7 +511,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
       source.connect(processor);
       processor.connect(audioContext.destination);
-      
+
       isCapturingRef.current = true;
       console.log("🎤 Audio capture started at 16kHz");
     } catch (err) {
@@ -517,7 +530,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       audioContextRef.current = null;
     }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
   };
@@ -595,11 +608,19 @@ function parseMessages(data: any): GeminiMessage[] {
   return messages;
 }
 
-async function executeTool(name: string, args: any, toggles: ToolToggles, serverUrl: string): Promise<any> {
+async function executeTool(
+  name: string,
+  args: any,
+  toggles: ToolToggles,
+  serverUrl: string,
+): Promise<any> {
   // Map tool names to API endpoints
   const toolMap: Record<string, { endpoint: string; enabled: string }> = {
     cognee_remember: { endpoint: "/api/cognee/remember", enabled: "cognee-remember" },
-    cognee_remember_batch: { endpoint: "/api/cognee/remember_batch", enabled: "cognee-batch-remember" },
+    cognee_remember_batch: {
+      endpoint: "/api/cognee/remember_batch",
+      enabled: "cognee-batch-remember",
+    },
     cognee_cognify: { endpoint: "/api/cognee/cognify", enabled: "cognee-cognify" },
     cognee_recall: { endpoint: "/api/cognee/recall", enabled: "cognee-recall" },
     cognee_forget: { endpoint: "/api/cognee/forget", enabled: "cognee-forget" },
@@ -614,6 +635,12 @@ async function executeTool(name: string, args: any, toggles: ToolToggles, server
     calendar_get_events: { endpoint: "/api/composio/call", enabled: "calendar-get" },
     calendar_create_event: { endpoint: "/api/composio/call", enabled: "calendar-create" },
     calendar_delete_event: { endpoint: "/api/composio/call", enabled: "calendar-delete" },
+    gdrive_find_file: { endpoint: "/api/composio/call", enabled: "gdrive-find" },
+    gdrive_get_file_metadata: { endpoint: "/api/composio/call", enabled: "gdrive-get-meta" },
+    gdrive_download_file: { endpoint: "/api/composio/call", enabled: "gdrive-download" },
+    gdrive_create_file_from_text: { endpoint: "/api/composio/call", enabled: "gdrive-create-text" },
+    gdrive_create_folder: { endpoint: "/api/composio/call", enabled: "gdrive-create-folder" },
+    gdrive_fetch_to_canvas: { endpoint: "/api/composio/call", enabled: "gdrive-fetch-to-canvas" },
   };
 
   const tool = toolMap[name];
@@ -626,7 +653,12 @@ async function executeTool(name: string, args: any, toggles: ToolToggles, server
   }
 
   // Handle Composio tools specially
-  if (name.startsWith("slack_") || name.startsWith("gmail_") || name.startsWith("calendar_")) {
+  if (
+    name.startsWith("slack_") ||
+    name.startsWith("gmail_") ||
+    name.startsWith("calendar_") ||
+    name.startsWith("gdrive_")
+  ) {
     const composioArgs = {
       tool_slug: name.toUpperCase(),
       arguments: args,
@@ -656,7 +688,8 @@ function getEnabledTools(toggles: ToolToggles): any[] {
   if (toggles["cognee-remember"]) {
     functionDeclarations.push({
       name: "cognee_remember",
-      description: "Store a fact in persistent memory. Use when user states preferences, facts, or observations.",
+      description:
+        "Store a fact in persistent memory. Use when user states preferences, facts, or observations.",
       parameters: {
         type: "object",
         properties: {
@@ -670,7 +703,8 @@ function getEnabledTools(toggles: ToolToggles): any[] {
   if (toggles["cognee-recall"]) {
     functionDeclarations.push({
       name: "cognee_recall",
-      description: "Search stored memories from previous sessions. Use for questions about past conversations.",
+      description:
+        "Search stored memories from previous sessions. Use for questions about past conversations.",
       parameters: {
         type: "object",
         properties: {
@@ -702,7 +736,8 @@ function getEnabledTools(toggles: ToolToggles): any[] {
   if (toggles["cognee-cognify"]) {
     functionDeclarations.push({
       name: "cognee_cognify",
-      description: "Trigger graph rebuild after storing memories. Call if you need immediate recall.",
+      description:
+        "Trigger graph rebuild after storing memories. Call if you need immediate recall.",
       parameters: { type: "object", properties: {} },
     });
   }
@@ -875,10 +910,101 @@ function getEnabledTools(toggles: ToolToggles): any[] {
     });
   }
 
+  // Google Drive tools (Composio)
+  if (toggles["gdrive-find"]) {
+    functionDeclarations.push({
+      name: "gdrive_find_file",
+      description:
+        "Search files in the connected Google Drive by name. Returns matching files with their id and name.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "File name search query" },
+          max_results: { type: "integer", description: "Max files to return (default 10)" },
+        },
+        required: ["query"],
+      },
+    });
+  }
+
+  if (toggles["gdrive-get-meta"]) {
+    functionDeclarations.push({
+      name: "gdrive_get_file_metadata",
+      description:
+        "Get metadata for a Google Drive file by id, including webViewLink for opening in Drive.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_id: { type: "string", description: "Google Drive file id" },
+        },
+        required: ["file_id"],
+      },
+    });
+  }
+
+  if (toggles["gdrive-download"]) {
+    functionDeclarations.push({
+      name: "gdrive_download_file",
+      description: "Download a Drive file's content by id. Returns file content.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_id: { type: "string", description: "Google Drive file id" },
+          mime_type: { type: "string", description: "Optional target mime type for export" },
+        },
+        required: ["file_id"],
+      },
+    });
+  }
+
+  if (toggles["gdrive-create-text"]) {
+    functionDeclarations.push({
+      name: "gdrive_create_file_from_text",
+      description: "Create a text file in Google Drive from raw text content.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "File name (e.g., notes.txt)" },
+          content: { type: "string", description: "Text content of the file" },
+          parent_id: { type: "string", description: "Optional parent folder id" },
+        },
+        required: ["name", "content"],
+      },
+    });
+  }
+
+  if (toggles["gdrive-create-folder"]) {
+    functionDeclarations.push({
+      name: "gdrive_create_folder",
+      description: "Create a folder in Google Drive.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Folder name" },
+          parent_id: { type: "string", description: "Optional parent folder id" },
+        },
+        required: ["name"],
+      },
+    });
+  }
+
+  if (toggles["gdrive-fetch-to-canvas"]) {
+    functionDeclarations.push({
+      name: "gdrive_fetch_to_canvas",
+      description:
+        "Fetch a referenced Google Drive file's metadata onto the canvas UI so the user can see and open it. Use when the user says 'fetch this file to canvas' or references a file to display. Requires a file_id.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_id: { type: "string", description: "Google Drive file id to fetch onto the canvas" },
+        },
+        required: ["file_id"],
+      },
+    });
+  }
+
   // Return in Gemini's expected format
-  return functionDeclarations.length > 0
-    ? [{ functionDeclarations }]
-    : [];
+  return functionDeclarations.length > 0 ? [{ functionDeclarations }] : [];
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -894,7 +1020,7 @@ function floatTo16BitPCM(input: Float32Array): DataView {
   const output = new Int16Array(input.length);
   for (let i = 0; i < input.length; i++) {
     const s = Math.max(-1, Math.min(1, input[i]));
-    output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return new DataView(output.buffer);
 }

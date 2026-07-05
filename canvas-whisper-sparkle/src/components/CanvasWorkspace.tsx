@@ -32,7 +32,16 @@ import {
 const TldrawCanvas = lazy(() => import("./TldrawCanvas"));
 const LottieLoader = lazy(() => import("./LottieLoader"));
 
-type Upload = { id: string; x: number; y: number; status: "loading" | "ready" };
+type Upload = {
+  id: string;
+  x: number;
+  y: number;
+  status: "loading" | "ready";
+  fileName?: string;
+  webViewLink?: string;
+  fileId?: string;
+  mimeType?: string;
+};
 
 const AURA_CYCLE: AuraState[] = ["connecting", "listening", "speaking", "thinking"];
 const STATE_LABELS: Record<AuraState, string> = {
@@ -63,6 +72,12 @@ export function CanvasWorkspace() {
       "calendar-get",
       "calendar-create",
       "calendar-delete",
+      "gdrive-find",
+      "gdrive-get-meta",
+      "gdrive-download",
+      "gdrive-create-text",
+      "gdrive-create-folder",
+      "gdrive-fetch-to-canvas",
     ];
     for (const id of toolIds) {
       initial[id] = true;
@@ -77,6 +92,7 @@ export function CanvasWorkspace() {
   const [kbActive, setKbActive] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState<string | null>(null);
+  const [previewUpload, setPreviewUpload] = useState<Upload | null>(null);
   const dragRef = useRef<{
     id: string;
     startX: number;
@@ -98,9 +114,31 @@ export function CanvasWorkspace() {
     serverUrl: "http://localhost:8000",
     toolToggles,
     systemInstructions:
-      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone.",
+      "You are a helpful assistant with persistent memory via Cognee. You can see through the camera and hear through the microphone. You have access to Google Drive: you can find, fetch, and read files the user references, and bring a file onto the canvas when asked.",
     onMessage: (msg: GeminiMessage) => {
       console.log("Gemini message:", msg.type);
+      if (msg.type === "tool_result" && msg.data?.name === "gdrive_fetch_to_canvas") {
+        const result = msg.data?.result;
+        const meta = result?.result && typeof result.result === "object" ? result.result : result;
+        const fileName = meta?.name ?? "Fetched file";
+        const webViewLink = meta?.webViewLink ?? meta?.display_url;
+        const fileId = meta?.id;
+        const mimeType = meta?.mimeType;
+        const rect = canvasRef.current?.getBoundingClientRect();
+        const w = rect?.width ?? window.innerWidth;
+        const h = rect?.height ?? window.innerHeight;
+        const id = `fetch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const x = 200 + Math.random() * Math.max(200, w - 500);
+        const y = 160 + Math.random() * Math.max(200, h - 400);
+        setUploads((u) => [
+          ...u,
+          { id, x, y, status: "loading", fileName, webViewLink, fileId, mimeType },
+        ]);
+        // Resolve the loading animation after a short delay to mimic fetch.
+        setTimeout(() => {
+          setUploads((u) => u.map((up) => (up.id === id ? { ...up, status: "ready" } : up)));
+        }, 1800);
+      }
     },
     onError: (err: Error) => {
       console.error("Gemini error:", err);
@@ -131,14 +169,44 @@ export function CanvasWorkspace() {
     const w = rect?.width ?? window.innerWidth;
     const h = rect?.height ?? window.innerHeight;
 
-    Array.from(files).forEach((_file, i) => {
+    Array.from(files).forEach((file, i) => {
       const id = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
       const x = 200 + Math.random() * Math.max(200, w - 500);
       const y = 160 + Math.random() * Math.max(200, h - 400);
       setUploads((u) => [...u, { id, x, y, status: "loading" }]);
-      setTimeout(() => {
-        setUploads((u) => u.map((up) => (up.id === id ? { ...up, status: "ready" } : up)));
-      }, 2200);
+
+      // Upload to Google Drive via the backend, then resolve the item with metadata.
+      const formData = new FormData();
+      formData.append("file", file);
+      fetch("http://localhost:8000/api/gdrive/upload", { method: "POST", body: formData })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+        .then((data) => {
+          const meta = data?.result && typeof data.result === "object" ? data.result : data;
+          setUploads((u) =>
+            u.map((up) =>
+              up.id === id
+                ? {
+                    ...up,
+                    status: "ready",
+                    fileName: meta?.name ?? file.name,
+                    webViewLink: meta?.webViewLink ?? meta?.display_url,
+                    fileId: meta?.id,
+                    mimeType: meta?.mimeType ?? file.type,
+                  }
+                : up,
+            ),
+          );
+        })
+        .catch((err) => {
+          console.error("Drive upload failed:", err);
+          setUploads((u) =>
+            u.map((up) =>
+              up.id === id
+                ? { ...up, status: "ready", fileName: file.name, mimeType: file.type }
+                : up,
+            ),
+          );
+        });
     });
   };
 
@@ -204,12 +272,19 @@ export function CanvasWorkspace() {
       </Suspense>
 
       {/* Upload overlays — draggable */}
-      <div className="absolute inset-0 z-30">
+      <div className="absolute inset-0 z-30 pointer-events-none">
         {uploads.map((u) => (
           <div
             key={u.id}
-            className={`absolute ${dragging === u.id ? "z-50 cursor-grabbing" : "cursor-grab"}`}
+            className={`absolute pointer-events-auto ${dragging === u.id ? "z-50 cursor-grabbing" : "cursor-grab"}`}
             style={{ left: u.x, top: u.y, width: 96, height: 96 }}
+            title={u.status === "ready" ? (u.fileName ?? "Uploaded file") : undefined}
+            onDoubleClick={(e) => {
+              if (u.status === "ready" && u.webViewLink) {
+                e.preventDefault();
+                setPreviewUpload(u);
+              }
+            }}
             onMouseDown={(e) => {
               e.preventDefault();
               handleDragStart(u.id, e.clientX, e.clientY);
@@ -227,9 +302,14 @@ export function CanvasWorkspace() {
               <div className="relative group">
                 <img
                   src={docReadySvg}
-                  alt="Document ready"
+                  alt={u.fileName ?? "Document ready"}
                   className="w-24 h-24 drop-shadow-lg pointer-events-none"
                 />
+                {u.fileName && (
+                  <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 max-w-[160px] truncate text-[10px] font-medium text-muted-foreground bg-card/90 border border-border rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    {u.fileName}
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => removeUpload(u.id)}
@@ -430,6 +510,43 @@ export function CanvasWorkspace() {
           }}
         />
       </div>
+
+      {previewUpload && (
+        <div className="fixed inset-0 z-[9999] bg-black/75 flex items-center justify-center p-8" onClick={() => setPreviewUpload(null)}>
+          <div className="relative w-full h-full max-w-6xl max-h-[90vh] bg-card rounded-xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/50">
+              <span className="text-sm font-medium truncate max-w-[80%]">{previewUpload.fileName}</span>
+              <button
+                type="button"
+                onClick={() => setPreviewUpload(null)}
+                className="h-8 w-8 rounded-lg grid place-items-center hover:bg-destructive/10 hover:text-destructive transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {previewUpload.fileId && previewUpload.mimeType?.startsWith("image/") ? (
+              <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-muted/20">
+                <img
+                  src={`https://drive.google.com/thumbnail?id=${previewUpload.fileId}&sz=w1200`}
+                  alt={previewUpload.fileName}
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+                />
+              </div>
+            ) : previewUpload.fileId ? (
+              <iframe
+                src={`https://drive.google.com/file/d/${previewUpload.fileId}/preview`}
+                className="flex-1 w-full border-0"
+                title={previewUpload.fileName}
+                allow="autoplay"
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                Preview not available
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

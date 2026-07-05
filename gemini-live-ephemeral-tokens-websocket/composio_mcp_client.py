@@ -1,6 +1,8 @@
 import asyncio
 import os
 import json
+import base64
+import re
 from composio import Composio
 
 
@@ -138,4 +140,126 @@ async def calendar_delete_event(event_id: str, calendar_id: str = "primary"):
         "event_id": event_id,
         "calendar_id": calendar_id
     })
+    return result
+
+
+# Google Drive tools
+async def gdrive_find_file(query: str, max_results: int = 10):
+    result = await composio_client.call_tool("GOOGLEDRIVE_FIND_FILE", {
+        "query": query,
+        "max_results": max_results,
+    })
+    return result
+
+
+async def gdrive_get_file_metadata(file_id: str):
+    result = await composio_client.call_tool("GOOGLEDRIVE_GET_FILE_METADATA", {
+        "file_id": file_id,
+    })
+    return result
+
+
+async def gdrive_download_file(file_id: str, mime_type: str = None):
+    arguments = {"file_id": file_id}
+    if mime_type:
+        arguments["mime_type"] = mime_type
+    result = await composio_client.call_tool("GOOGLEDRIVE_DOWNLOAD_FILE", arguments)
+    return result
+
+
+async def gdrive_create_file(name: str, mime_type: str = "application/octet-stream", parent_id: str = None):
+    """Creates a file entry in Google Drive (metadata-only; no content upload via SDK staging).
+    Returns {id, name, display_url, mimeType}."""
+    arguments = {
+        "name": name,
+        "mimeType": mime_type,
+    }
+    if parent_id:
+        arguments["parents"] = [parent_id]
+    result = await composio_client.call_tool("GOOGLEDRIVE_CREATE_FILE", arguments)
+    return result
+
+
+async def gdrive_create_file_from_text(file_name: str, text_content: str, mime_type: str = "text/plain", parent_id: str = None):
+    """Creates a file in Google Drive with actual text content. Returns {id, name, display_url, mimeType}."""
+    arguments = {
+        "file_name": file_name,
+        "text_content": text_content,
+        "mime_type": mime_type,
+    }
+    if parent_id:
+        arguments["parent_id"] = parent_id
+    result = await composio_client.call_tool("GOOGLEDRIVE_CREATE_FILE_FROM_TEXT", arguments)
+    return result
+
+
+async def gdrive_upload_binary(name: str, raw_bytes: bytes, mime_type: str = "application/octet-stream", parent_id: str = None):
+    """Uploads binary content to Google Drive via Composio S3 staging.
+    Step 1: Stage to S3 via COMPOSIO_REMOTE_WORKBENCH. Step 2: GOOGLEDRIVE_UPLOAD_FILE."""
+    b64 = base64.b64encode(raw_bytes).decode("ascii")
+
+    stage_code = (
+        f'import base64\n'
+        f'raw = base64.b64decode("{b64}")\n'
+        f'out_path = "/home/user/{name}"\n'
+        f'with open(out_path, "wb") as f:\n'
+        f'    f.write(raw)\n'
+        f'result, err = upload_local_file(out_path)\n'
+        f'output = {{"result": result, "error": err}}\n'
+    )
+
+    stage_result = await composio_client.call_tool("COMPOSIO_REMOTE_WORKBENCH", {
+        "code_to_execute": stage_code,
+        "thought": f"Stage binary {name} to S3",
+        "current_step": "STAGING_FILE",
+    })
+
+    s3key = None
+    try:
+        parsed = json.loads(stage_result) if isinstance(stage_result, str) else stage_result
+        stdout = parsed.get("stdout", "")
+        match = re.search(r"\(s3key\):\s*(\S+)", stdout)
+        if match:
+            s3key = match.group(1)
+    except Exception:
+        pass
+
+    if not s3key:
+        raise RuntimeError(f"Failed to extract s3key from workbench staging result: {stage_result}")
+
+    upload_args = {
+        "file_to_upload": {
+            "name": name,
+            "mimetype": mime_type,
+            "s3key": s3key,
+        }
+    }
+    if parent_id:
+        upload_args["folder_to_upload_to"] = parent_id
+
+    result = await composio_client.call_tool("GOOGLEDRIVE_UPLOAD_FILE", upload_args)
+    return result
+
+
+async def gdrive_create_folder(name: str, parent_id: str = None):
+    arguments = {"name": name}
+    if parent_id:
+        arguments["parent_id"] = parent_id
+    result = await composio_client.call_tool("GOOGLEDRIVE_CREATE_FOLDER", arguments)
+    return result
+
+
+async def gdrive_set_sharing_public(file_id: str):
+    """Sets a file to be publicly accessible (anyone with link can view)."""
+    arguments = {
+        "file_id": file_id,
+        "type": "anyone",
+        "role": "reader"
+    }
+    result = await composio_client.call_tool("GOOGLEDRIVE_CREATE_PERMISSION", arguments)
+    return result
+
+
+async def gdrive_get_about():
+    result = await composio_client.call_tool("GOOGLEDRIVE_GET_ABOUT", {})
     return result

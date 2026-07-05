@@ -5,6 +5,7 @@ Uses Cognee HTTP API for memory management with persistent storage.
 """
 
 import asyncio
+import base64
 import json
 import mimetypes
 import os
@@ -26,7 +27,10 @@ from composio_mcp_client import (
     composio_client, init_composio,
     slack_send_message, slack_list_channels,
     gmail_fetch_emails, gmail_send_email,
-    calendar_get_events, calendar_create_event, calendar_delete_event
+    calendar_get_events, calendar_create_event, calendar_delete_event,
+    gdrive_find_file, gdrive_get_file_metadata, gdrive_download_file,
+    gdrive_create_file, gdrive_create_file_from_text, gdrive_create_folder,
+    gdrive_upload_binary, gdrive_get_about, gdrive_set_sharing_public,
 )
 
 HTTP_PORT = 8000
@@ -438,6 +442,48 @@ async def composio_call_endpoint(request):
             event_id = arguments.get("event_id", "")
             calendar_id = arguments.get("calendar_id", "primary")
             result = await calendar_delete_event(event_id, calendar_id)
+        elif tool_name == "gdrive_find_file":
+            query = arguments.get("query", "")
+            max_results = arguments.get("max_results", 10)
+            result = await gdrive_find_file(query, max_results)
+        elif tool_name == "gdrive_get_file_metadata":
+            file_id = arguments.get("file_id", "")
+            result = await gdrive_get_file_metadata(file_id)
+        elif tool_name == "gdrive_download_file":
+            file_id = arguments.get("file_id", "")
+            mime_type = arguments.get("mime_type")
+            result = await gdrive_download_file(file_id, mime_type)
+        elif tool_name == "gdrive_create_file_from_text":
+            file_name = arguments.get("file_name", "") or arguments.get("name", "")
+            text_content = arguments.get("text_content", "") or arguments.get("content", "")
+            mime_type = arguments.get("mime_type", "text/plain")
+            parent_id = arguments.get("parent_id")
+            result = await gdrive_create_file_from_text(file_name, text_content, mime_type, parent_id)
+        elif tool_name == "gdrive_create_folder":
+            name = arguments.get("name", "")
+            parent_id = arguments.get("parent_id")
+            result = await gdrive_create_folder(name, parent_id)
+        elif tool_name == "gdrive_get_about":
+            result = await gdrive_get_about()
+        elif tool_name == "gdrive_fetch_to_canvas":
+            file_id = arguments.get("file_id", "")
+            if file_id:
+                try:
+                    await gdrive_set_sharing_public(file_id)
+                except Exception as perm_err:
+                    print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+            meta_json = await gdrive_get_file_metadata(file_id)
+            try:
+                meta_data = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
+                if isinstance(meta_data, dict) and "results" in meta_data:
+                    results_list = meta_data["results"]
+                    if isinstance(results_list, list) and len(results_list) > 0:
+                        resp = results_list[0].get("response", {})
+                        if isinstance(resp, dict) and "data" in resp:
+                            meta_data = resp["data"]
+                result = meta_data
+            except Exception:
+                result = meta_json
         else:
             # Direct call for unknown tools
             result = await composio_client.call_tool(tool_name, arguments)
@@ -455,11 +501,108 @@ async def composio_list_tools_endpoint(request):
         if not composio_client.session:
             return web.json_response({"error": "Composio MCP client not connected"}, status=500)
 
-        tools = [{"name": t.name, "description": t.description} for t in composio_client.tools]
+        tools = []
+        for t in composio_client.tools:
+            name = t.get("name") if isinstance(t, dict) else getattr(t, "name", "")
+            desc = t.get("description") if isinstance(t, dict) else getattr(t, "description", "")
+            schema = None
+            raw = t.get("tool") if isinstance(t, dict) else None
+            if isinstance(raw, dict):
+                func = raw.get("function", raw)
+                schema = func.get("parameters")
+            tools.append({"name": name, "description": desc, "parameters": schema})
         return web.json_response({"tools": tools})
 
     except Exception as e:
         print(f"Composio list tools error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def gdrive_upload_endpoint(request):
+    """Upload a file to Google Drive via Composio. Multipart form: field 'file'.
+    Text-decodable files are uploaded with content via CREATE_FILE_FROM_TEXT.
+    Binary files get a Drive entry with name + mimeType via CREATE_FILE."""
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != "file":
+            return web.json_response({"error": "multipart 'file' field is required"}, status=400)
+
+        raw = await field.read(decode=False)
+        filename = field.filename or "upload.bin"
+        mime_type = field.headers.get("Content-Type", "application/octet-stream")
+
+        # Try text upload first (works for text/*, json, xml, csv, etc.)
+        text_content = None
+        text_mime_prefixes = ("text/", "application/json", "application/xml", "application/javascript",
+                              "application/x-yaml", "application/csv", "image/svg+xml")
+        if mime_type.startswith(text_mime_prefixes):
+            try:
+                text_content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text_content = None
+
+        if text_content is not None:
+            result_json = await gdrive_create_file_from_text(filename, text_content, mime_type)
+        else:
+            result_json = await gdrive_upload_binary(filename, raw, mime_type)
+
+        try:
+            data = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except Exception:
+            data = result_json
+
+        # Extract the inner data object from the multi-execute wrapper
+        inner = data
+        if isinstance(inner, dict) and "results" in inner:
+            results_list = inner["results"]
+            if isinstance(results_list, list) and len(results_list) > 0:
+                resp = results_list[0].get("response", {})
+                if isinstance(resp, dict) and "data" in resp:
+                    inner = resp["data"]
+
+        file_id = inner.get("id") if isinstance(inner, dict) else None
+        if file_id:
+            try:
+                await gdrive_set_sharing_public(file_id)
+            except Exception as perm_err:
+                print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+
+        return web.json_response({"result": inner, "name": filename, "mimeType": mime_type})
+
+    except Exception as e:
+        print(f"GDrive upload error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def gdrive_fetch_endpoint(request):
+    """Fetch a Drive file's metadata + webViewLink by file_id (POST {file_id})."""
+    try:
+        data = await request.json()
+        file_id = data.get("file_id", "")
+        if not file_id:
+            return web.json_response({"error": "file_id is required"}, status=400)
+
+        try:
+            await gdrive_set_sharing_public(file_id)
+        except Exception as perm_err:
+            print(f"GDrive sharing permission error (non-fatal): {perm_err}")
+
+        result_json = await gdrive_get_file_metadata(file_id)
+        try:
+            parsed = json.loads(result_json) if isinstance(result_json, str) else result_json
+            if isinstance(parsed, dict) and "results" in parsed:
+                results_list = parsed["results"]
+                if isinstance(results_list, list) and len(results_list) > 0:
+                    resp = results_list[0].get("response", {})
+                    if isinstance(resp, dict) and "data" in resp:
+                        parsed = resp["data"]
+        except Exception:
+            parsed = result_json
+
+        return web.json_response({"result": parsed})
+    except Exception as e:
+        print(f"GDrive fetch error: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -534,9 +677,13 @@ async def main():
     app.router.add_post("/api/notion/get_page", notion_get_page_endpoint)
     app.router.add_get("/api/notion/tools", notion_list_tools_endpoint)
 
-    # Composio MCP endpoints (Slack, Gmail, Google Calendar)
+    # Composio MCP endpoints (Slack, Gmail, Google Calendar, Google Drive)
     app.router.add_post("/api/composio/call", composio_call_endpoint)
     app.router.add_get("/api/composio/tools", composio_list_tools_endpoint)
+
+    # Google Drive endpoints
+    app.router.add_post("/api/gdrive/upload", gdrive_upload_endpoint)
+    app.router.add_post("/api/gdrive/fetch", gdrive_fetch_endpoint)
 
     # Initialize Notion MCP client
     notion_ok = await init_notion()
