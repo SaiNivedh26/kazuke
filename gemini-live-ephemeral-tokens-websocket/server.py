@@ -13,6 +13,8 @@ import datetime
 import threading
 import time
 import requests
+import re
+import unicodedata
 
 from aiohttp import web
 from google import genai
@@ -43,6 +45,40 @@ COGNEE_TENANT_ID = os.environ.get("COGNEE_TENANT_ID", "default")
 COGNEE_USER_ID = os.environ.get("COGNEE_USER_ID", "default")
 
 PERSISTENT_DATASET = "gemini_live_memory"
+
+def clean_extracted_text(text):
+    """Clean extracted text by normalizing whitespace and removing control characters."""
+    if not text:
+        return text
+    
+    # Normalize unicode characters (convert fancy quotes, dashes, etc. to ASCII equivalents)
+    text = unicodedata.normalize('NFKD', text)
+    
+    # Replace common unicode characters with ASCII equivalents
+    text = text.replace('\u2014', '-')  # em dash
+    text = text.replace('\u2013', '-')  # en dash
+    text = text.replace('\u2018', "'")  # left single quote
+    text = text.replace('\u2019', "'")  # right single quote
+    text = text.replace('\u201c', '"')  # left double quote
+    text = text.replace('\u201d', '"')  # right double quote
+    text = text.replace('\u2026', '...')  # ellipsis
+    text = text.replace('\u00a0', ' ')  # non-breaking space
+    
+    # Remove control characters except newlines and tabs
+    text = ''.join(char for char in text if unicodedata.category(char)[0] != 'C' or char in '\n\t')
+    
+    # Normalize whitespace: replace multiple spaces with single space, but preserve newlines
+    text = re.sub(r'[^\S\n]+', ' ', text)
+    
+    # Remove leading/trailing whitespace from each line
+    lines = [line.strip() for line in text.split('\n')]
+    text = '\n'.join(lines)
+    
+    # Remove multiple consecutive newlines (keep max 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
 
 def get_cognee_headers():
     return {
@@ -294,6 +330,262 @@ async def cognee_forget(request):
 
     except Exception as e:
         print(f"Cognee forget error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def cognee_update(request):
+    """Updates existing memories by finding and replacing content. Bidirectional MCP."""
+    try:
+        data = await request.json()
+        query = data.get("query")
+        old_text = data.get("old_text")
+        new_text = data.get("new_text")
+
+        print(f"[Cognee Update] Received update request: query={query}, old_text={old_text}, new_text={new_text}")
+
+        if not query:
+            return web.json_response({"error": "query is required to find memories"}, status=400)
+        if not old_text or not new_text:
+            return web.json_response({"error": "old_text and new_text are required"}, status=400)
+
+        headers = get_cognee_headers()
+        
+        # First, recall existing memories matching the query
+        print(f"[Cognee Update] Recalling memories with query: {query}")
+        recall_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/recall",
+            json={
+                "query": query,
+                "searchType": "CHUNKS",
+                "datasets": [PERSISTENT_DATASET]
+            },
+            headers=headers,
+            timeout=30
+        )
+
+        print(f"[Cognee Update] Recall response status: {recall_resp.status_code}")
+        
+        if recall_resp.status_code == 404:
+            return web.json_response({
+                "status": "no_memories_found",
+                "message": f"No memories found matching query: {query}"
+            })
+
+        if recall_resp.status_code != 200:
+            return web.json_response({
+                "error": f"Failed to recall memories: {recall_resp.status_code}",
+                "details": recall_resp.text
+            }, status=500)
+
+        recalled = recall_resp.json()
+        print(f"[Cognee Update] Recall response type: {type(recalled)}")
+        
+        # Check if we found any memories - handle different response formats
+        results = []
+        if isinstance(recalled, list):
+            results = recalled
+        elif isinstance(recalled, dict):
+            if "result" in recalled:
+                results = recalled["result"]
+            elif "results" in recalled:
+                results = recalled["results"]
+            elif "chunks" in recalled:
+                results = recalled["chunks"]
+            elif "data" in recalled:
+                results = recalled["data"]
+        
+        if not results:
+            return web.json_response({
+                "status": "no_memories_found",
+                "message": f"No memories found matching query: {query}"
+            })
+        
+        print(f"[Cognee Update] Found {len(results)} memories to check")
+        
+        # For each matching memory, check if old_text exists and replace it
+        updated_count = 0
+        for memory in results:
+            # Extract text from different possible locations
+            memory_text = ""
+            if isinstance(memory, dict):
+                # Try multiple fields where text might be stored
+                memory_text = memory.get("text", "")
+                if not memory_text and "raw" in memory:
+                    raw = memory["raw"]
+                    if isinstance(raw, dict):
+                        memory_text = raw.get("value", "") or raw.get("text", "")
+                if not memory_text and "content" in memory:
+                    memory_text = memory["content"]
+            else:
+                memory_text = str(memory)
+            
+            print(f"[Cognee Update] Checking memory text (first 200 chars): {memory_text[:200]}")
+            
+            # Case-insensitive search as fallback
+            if old_text in memory_text:
+                # Replace old_text with new_text
+                updated_text = memory_text.replace(old_text, new_text)
+                
+                # Store the updated memory
+                store_in_background([updated_text])
+                updated_count += 1
+                print(f"[Cognee Update] Updated memory: {memory_text[:100]}... -> {updated_text[:100]}...")
+            elif old_text.lower() in memory_text.lower():
+                # Case-insensitive replacement
+                import re
+                updated_text = re.sub(re.escape(old_text), new_text, memory_text, flags=re.IGNORECASE)
+                store_in_background([updated_text])
+                updated_count += 1
+                print(f"[Cognee Update] Updated memory (case-insensitive): {memory_text[:100]}... -> {updated_text[:100]}...")
+        
+        return web.json_response({
+            "status": "updated",
+            "updated_count": updated_count,
+            "query": query,
+            "old_text": old_text,
+            "new_text": new_text
+        })
+
+        # Handle different response formats
+        results = []
+        if isinstance(recalled, dict):
+            if "result" in recalled:
+                results = recalled["result"]
+            elif "results" in recalled:
+                results = recalled["results"]
+            elif "chunks" in recalled:
+                results = recalled["chunks"]
+            elif "data" in recalled:
+                results = recalled["data"]
+        elif isinstance(recalled, list):
+            results = recalled
+
+        print(f"[Cognee Update] Found {len(results)} results")
+
+        # For each matching memory, create an updated version
+        updated_count = 0
+        for result in results:
+            # Handle different result formats
+            chunk_text = ""
+            if isinstance(result, dict):
+                chunk_text = result.get("text", "") or result.get("content", "") or result.get("chunk", "")
+            elif isinstance(result, str):
+                chunk_text = result
+            
+            print(f"[Cognee Update] Processing chunk: {chunk_text[:100]}...")
+            
+            # Check if old_text is in this chunk
+            if old_text in chunk_text:
+                # Replace old_text with new_text
+                updated_chunk = chunk_text.replace(old_text, new_text)
+                
+                # Store the updated chunk
+                store_in_background([updated_chunk])
+                updated_count += 1
+                print(f"[Cognee Update] Updated chunk: {updated_chunk[:100]}...")
+            else:
+                print(f"[Cognee Update] old_text not found in chunk")
+
+        return web.json_response({
+            "status": "updated",
+            "updated_count": updated_count,
+            "query": query,
+            "old_text": old_text,
+            "new_text": new_text,
+            "dataset": PERSISTENT_DATASET
+        })
+
+    except Exception as e:
+        print(f"Cognee update error: {e}")
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def cognee_delete(request):
+    """Deletes specific memories by query. More granular than forget (which deletes all)."""
+    try:
+        data = await request.json()
+        query = data.get("query")
+        exact_match = data.get("exact_match", False)
+
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+
+        headers = get_cognee_headers()
+        
+        # Recall memories matching the query
+        recall_resp = requests.post(
+            f"{COGNEE_BASE_URL}/api/v1/recall",
+            json={
+                "query": query,
+                "searchType": "CHUNKS",
+                "datasets": [PERSISTENT_DATASET]
+            },
+            headers=headers,
+            timeout=30
+        )
+
+        if recall_resp.status_code != 200:
+            return web.json_response({
+                "error": f"Failed to recall memories: {recall_resp.status_code}",
+                "details": recall_resp.text
+            }, status=500)
+
+        recalled = recall_resp.json()
+        
+        # Handle different response formats
+        results = []
+        if isinstance(recalled, dict):
+            if "result" in recalled:
+                results = recalled["result"]
+            elif "results" in recalled:
+                results = recalled["results"]
+            elif "chunks" in recalled:
+                results = recalled["chunks"]
+            elif "data" in recalled:
+                results = recalled["data"]
+        elif isinstance(recalled, list):
+            results = recalled
+        
+        if not results:
+            return web.json_response({
+                "status": "no_memories_found",
+                "message": f"No memories found matching query: {query}"
+            })
+
+        # For each matching memory, we can't directly delete individual chunks in Cognee
+        # Instead, we'll mark them as deleted by storing a deletion marker
+        # This is a workaround until Cognee provides chunk-level delete API
+        deleted_count = 0
+        for result in results:
+            chunk_text = result.get("text", "")
+            
+            # Check if we should delete this chunk
+            should_delete = False
+            if exact_match:
+                should_delete = (chunk_text == query)
+            else:
+                should_delete = (query.lower() in chunk_text.lower())
+            
+            if should_delete:
+                # Store a deletion marker (Cognee doesn't support direct chunk deletion)
+                deletion_marker = f"[DELETED] {chunk_text[:50]}... (marked for deletion)"
+                store_in_background([deletion_marker])
+                deleted_count += 1
+                print(f"[Cognee Delete] Marked for deletion: {chunk_text[:100]}...")
+
+        return web.json_response({
+            "status": "marked_for_deletion",
+            "deleted_count": deleted_count,
+            "query": query,
+            "exact_match": exact_match,
+            "dataset": PERSISTENT_DATASET,
+            "note": "Individual chunk deletion not supported by Cognee API. Marked for deletion instead."
+        })
+
+    except Exception as e:
+        print(f"Cognee delete error: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -820,7 +1112,8 @@ def _extract_file_content(file_info):
                 file_content = str(file_content)
             
             print(f"[Content Extract] Text file content (first 100 chars): {file_content[:100]}...")
-            return f"File '{file_name}' content:\n{file_content}"
+            cleaned_content = clean_extracted_text(file_content)
+            return f"File '{file_name}' content:\n{cleaned_content}"
         
         # Handle images - send to Gemini for description
         elif effective_mime_type.startswith("image/"):
@@ -872,8 +1165,9 @@ def _extract_file_content(file_info):
             if resp.status_code == 200:
                 result = resp.json()
                 description = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                print(f"[Content Extract] Image description: {description[:100]}...")
-                return f"Image '{file_name}' description:\n{description}"
+                cleaned_description = clean_extracted_text(description)
+                print(f"[Content Extract] Image description: {cleaned_description[:100]}...")
+                return f"Image '{file_name}' description:\n{cleaned_description}"
             else:
                 print(f"[Content Extract] Gemini vision failed: {resp.status_code} - {resp.text[:300]}")
                 return f"Image file: {file_name} (analysis failed)"
@@ -906,8 +1200,9 @@ def _extract_file_content(file_info):
                         text_parts.append(text)
                 
                 extracted_text = "\n\n".join(text_parts)
-                print(f"[Content Extract] PDF text extracted ({len(extracted_text)} chars)")
-                return f"File '{file_name}' content:\n{extracted_text}"
+                cleaned_text = clean_extracted_text(extracted_text)
+                print(f"[Content Extract] PDF text extracted ({len(cleaned_text)} chars)")
+                return f"File '{file_name}' content:\n{cleaned_text}"
             except Exception as e:
                 print(f"[Content Extract] PDF extraction failed: {e}")
                 return f"File: {file_name} (PDF extraction failed: {str(e)[:50]})"
@@ -939,8 +1234,9 @@ def _extract_file_content(file_info):
                         text_parts.append(para.text)
                 
                 extracted_text = "\n\n".join(text_parts)
-                print(f"[Content Extract] DOCX text extracted ({len(extracted_text)} chars)")
-                return f"File '{file_name}' content:\n{extracted_text}"
+                cleaned_text = clean_extracted_text(extracted_text)
+                print(f"[Content Extract] DOCX text extracted ({len(cleaned_text)} chars)")
+                return f"File '{file_name}' content:\n{cleaned_text}"
             except Exception as e:
                 print(f"[Content Extract] DOCX extraction failed: {e}")
                 return f"File: {file_name} (DOCX extraction failed: {str(e)[:50]})"
@@ -977,12 +1273,13 @@ File contents:
 {all_content}
 """
         
+        # Clean the final text before storing
+        text = clean_extracted_text(text)
+        
         headers = get_cognee_headers()
         
         print(f"[Cognee] Storing context '{context_name}' with {len(files)} files")
         print(f"[Cognee] Total text length: {len(text)} chars")
-        print(f"[Cognee] Text preview: {text[:500]}...")
-        print(f"[Cognee] Text preview: {text[:500]}...")
         print(f"[Cognee] Text preview: {text[:500]}...")
         
         add_resp = requests.post(
@@ -1263,6 +1560,8 @@ async def main():
     app.router.add_post("/api/cognee/cognify", cognee_cognify)
     app.router.add_post("/api/cognee/recall", cognee_recall)
     app.router.add_post("/api/cognee/forget", cognee_forget)
+    app.router.add_post("/api/cognee/update", cognee_update)
+    app.router.add_post("/api/cognee/delete", cognee_delete)
     app.router.add_get("/api/cognee/visualize", cognee_visualize)
 
     # Notion MCP endpoints

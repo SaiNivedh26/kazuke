@@ -76,7 +76,19 @@ const SECTIONS: {
         description: "Search stored memories",
         defaultOn: true,
       },
-      { id: "cognee-forget", label: "Forget", description: "Remove memories", defaultOn: true },
+      {
+        id: "cognee-update",
+        label: "Update",
+        description: "Update existing memories - bidirectional",
+        defaultOn: true,
+      },
+      {
+        id: "cognee-delete",
+        label: "Delete",
+        description: "Delete specific memories by query",
+        defaultOn: true,
+      },
+      { id: "cognee-forget", label: "Forget", description: "Remove all memories", defaultOn: true },
     ],
   },
   {

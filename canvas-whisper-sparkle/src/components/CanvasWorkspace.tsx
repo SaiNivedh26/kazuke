@@ -68,6 +68,8 @@ export function CanvasWorkspace() {
       "cognee-cognify",
       "cognee-recall",
       "cognee-forget",
+      "cognee-update",
+      "cognee-delete",
       "notion-search",
       "notion-create-page",
       "notion-append",
