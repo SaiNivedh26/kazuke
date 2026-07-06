@@ -1,7 +1,7 @@
 # Kazake
 <p align="center">
   <img
-    src="https://github.com/user-attachments/assets/f6a1e75a-73f9-4d0f-9efd-d3b6aa3a39c9"
+    src="./assets/kazake-logo.png"
     alt="Kazake"
     width="560"
   />
@@ -50,7 +50,7 @@ Cognee is the memory layer behind Kazake. We use it to store, organize, and retr
 
 ## Architecture
 
-<img width="1580" height="1275" alt="shapes at 26-07-06 12 34 01" src="https://github.com/user-attachments/assets/e9c7b77c-30d7-4d45-b9e2-dae3f94ae5b7" />
+<img width="1580" height="1275" alt="shapes at 26-07-06 12 34 01" src="./assets/architecture.png" />
 
 
 
@@ -58,12 +58,12 @@ Cognee is the memory layer behind Kazake. We use it to store, organize, and retr
 
 ## Core features
 
-<img width="720" height="404" alt="avyfdq" src="https://github.com/user-attachments/assets/2038e12e-ce3d-4635-ae3f-8d9c1b3e28a7" />
-<img width="720" height="404" alt="avyfno" src="https://github.com/user-attachments/assets/c03a2ec3-8bb0-4230-8342-84e7bbe5636e" />
-<img width="720" height="404" alt="avyft7" src="https://github.com/user-attachments/assets/fa841e81-0e95-4b98-94e9-cf2fbad10135" />
-<img width="720" height="404" alt="avyfx0" src="https://github.com/user-attachments/assets/a7a6d58f-e403-4851-85af-4822c8109f70" />
-<img width="720" height="404" alt="avyg85" src="https://github.com/user-attachments/assets/aa5532af-84f5-40c6-8434-ae669053b491" />
-<img width="720" height="404" alt="avygc1" src="https://github.com/user-attachments/assets/c59b3aa9-d9c6-41d1-9f6f-31974d3efc80" />
+<img width="720" height="404" alt="avyfdq" src="./assets/core-feature-1.gif" />
+<img width="720" height="404" alt="avyfno" src="./assets/core-feature-2.gif" />
+<img width="720" height="404" alt="avyft7" src="./assets/core-feature-3.gif" />
+<img width="720" height="404" alt="avyfx0" src="./assets/core-feature-4.gif" />
+<img width="720" height="404" alt="avyg85" src="./assets/core-feature-5.gif" />
+<img width="720" height="404" alt="avygc1" src="./assets/core-feature-6.gif" />
 
 
 ---
@@ -217,7 +217,7 @@ Kazake stores structured episodic memories, not raw video. Each memory event con
 
 ---
 
-![Material wave loading](https://github.com/user-attachments/assets/a08255eb-9647-471d-9881-61871332249f)
+![Material wave loading](./assets/material-wave-loading.gif)
 
 ## Developers
 
