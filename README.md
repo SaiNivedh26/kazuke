@@ -58,12 +58,12 @@ Cognee is the memory layer behind Kazake. We use it to store, organize, and retr
 
 ## Core features
 
-<img width="720" height="404" alt="avyfdq" src="./assets/core-feature-1.gif" />
-<img width="720" height="404" alt="avyfno" src="./assets/core-feature-2.gif" />
-<img width="720" height="404" alt="avyft7" src="./assets/core-feature-3.gif" />
-<img width="720" height="404" alt="avyfx0" src="./assets/core-feature-4.gif" />
-<img width="720" height="404" alt="avyg85" src="./assets/core-feature-5.gif" />
-<img width="720" height="404" alt="avygc1" src="./assets/core-feature-6.gif" />
+<img width="720" height="404" alt="avyfdq" src="./assets/f1.gif" />
+<img width="720" height="404" alt="avyfno" src="./assets/f2.gif" />
+<img width="720" height="404" alt="avyft7" src="./assets/f3.gif" />
+<img width="720" height="404" alt="avyfx0" src="./assets/f4.gif" />
+<img width="720" height="404" alt="avyg85" src="./assets/f5.gif" />
+<img width="720" height="404" alt="avygc1" src="./assets/f6.gif" />
 
 
 ---
