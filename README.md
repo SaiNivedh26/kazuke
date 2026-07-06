@@ -1,4 +1,35 @@
 # Kazake
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/f6a1e75a-73f9-4d0f-9efd-d3b6aa3a39c9"
+    alt="Kazake"
+    width="560"
+  />
+</p>
+
+![React](https://img.shields.io/badge/Made%20with-React%2019-61DAFB)
+![TanStack Router](https://img.shields.io/badge/Made%20with-TanStack%20Router-FF4154)
+![TanStack Start](https://img.shields.io/badge/Made%20with-TanStack%20Start-FF4154)
+![Vite](https://img.shields.io/badge/Made%20with-Vite%208-646CFF)
+![Tailwind CSS](https://img.shields.io/badge/Made%20with-Tailwind%20CSS%204-06B6D4)
+![tldraw](https://img.shields.io/badge/Made%20with-tldraw-000000)
+![Web Audio API](https://img.shields.io/badge/Made%20with-Web%20Audio%20API-F7DF1E)
+![AudioWorklet](https://img.shields.io/badge/Made%20with-AudioWorklet-FF9800)
+![GoJS](https://img.shields.io/badge/Made%20with-GoJS-007ACC)
+![Lottie](https://img.shields.io/badge/Made%20with-Lottie-00DDB3)
+![Python](https://img.shields.io/badge/Made%20with-Python%203.12-3776AB)
+![FastAPI](https://img.shields.io/badge/Made%20with-FastAPI-009688)
+![Uvicorn](https://img.shields.io/badge/Made%20with-Uvicorn-499848)
+![Gemini Live API](https://img.shields.io/badge/Made%20with-Gemini%20Live%20API-4285F4)
+![Cognee](https://img.shields.io/badge/Made%20with-Cognee-6E56CF)
+![Ephemeral Token Exchange](https://img.shields.io/badge/Made%20with-Ephemeral%20Token%20Exchange-4285F4)
+![Notion](https://img.shields.io/badge/Made%20with-Notion-000000)
+![Slack](https://img.shields.io/badge/Made%20with-Slack-4A154B)
+![Gmail](https://img.shields.io/badge/Made%20with-Gmail-EA4335)
+![Google Calendar](https://img.shields.io/badge/Made%20with-Google%20Calendar-4285F4)
+![Google Drive](https://img.shields.io/badge/Made%20with-Google%20Drive-34A853)
+![Composio](https://img.shields.io/badge/Made%20with-Composio-7C3AED)
+
 
 **Turn live perception into persistent memory.**
 
@@ -6,11 +37,26 @@ It is a context as a service(CAAS) platform. It captures context from voice, scr
 
 Since it has access to Cognee, it can maintain a graphical context between different sessions, not only materialistic data, but also the visual contextual ingestion, for adding daily life activity/events to the unified platform
 
-By default comes with a canvas page to maintain and manage content to pass down to downstream agents as an MCP server. These are specially configured as bi-directional streaming mcp's, so coding agents can update and remove the context as per the user request. 
+By default comes with a canvas page to maintain and manage content to pass down to downstream agents as an MCP server. These are specially configured as bi-directional streaming mcp's, so coding agents can update and remove the context as per the user request.
+
+Cognee is the memory layer behind Kazake. We use it to store, organize, and retrieve project context as structured memory, so the AI can remember important details, group related information, and use the same context again later. It formulates a huge, dense graph connection that can reason between different activities that happened across different days and can perform parallel reasoning with the configured tools, making it superior to any other tools out there.
+
+
+### check the [demo](https://www.youtube.com/watch?v=BPySjaEyfmg)
+
 
 ---
 
 
+## Architecture
+
+<img width="1579" height="1275" alt="shapes at 26-07-06 12 31 02" src="https://github.com/user-attachments/assets/bb3611f0-4b78-44ba-9561-d9b78914774b" />
+
+
+
+---
+
+## Core features
 
 <img width="720" height="404" alt="avyfdq" src="https://github.com/user-attachments/assets/2038e12e-ce3d-4635-ae3f-8d9c1b3e28a7" />
 <img width="720" height="404" alt="avyfno" src="https://github.com/user-attachments/assets/c03a2ec3-8bb0-4230-8342-84e7bbe5636e" />
@@ -19,67 +65,6 @@ By default comes with a canvas page to maintain and manage content to pass down 
 <img width="720" height="404" alt="avyg85" src="https://github.com/user-attachments/assets/aa5532af-84f5-40c6-8434-ae669053b491" />
 <img width="720" height="404" alt="avygc1" src="https://github.com/user-attachments/assets/c59b3aa9-d9c6-41d1-9f6f-31974d3efc80" />
 
-
-## What it does
-
-Kazake streams live camera and microphone input through Gemini Live, detects memory-worthy events (objects, ownership, relationships, locations), and persists them as structured knowledge in a Cognee knowledge graph — all in near real time.
-
-Show it your water bottle and say *"This was gifted by my grandfather."* Kazake captures the object, the relationship, and a frame snapshot as evidence. Later, ask *"Where is the bottle gifted by my grandfather?"* and it recalls the memory with visual proof.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Browser (React + tldraw)                 │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ Camera   │  │ Mic (16kHz)  │  │ Screen Share (1fps)   │  │
-│  └────┬─────┘  └──────┬───────┘  └───────────┬───────────┘  │
-│       │               │                       │              │
-│       └───────────────┼───────────────────────┘              │
-│                       ▼                                      │
-│            Gemini Live WebSocket                             │
-│            (gemini-3.1-flash-live-preview)                   │
-│                       │                                      │
-│                       ▼                                      │
-│              Tool Call Emission                              │
-│         (capture_memory_event, etc.)                         │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  FastAPI Backend (:8080)                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ Ephemeral    │  │ Frame Upload │  │ Tool Execution    │  │
-│  │ Token Auth   │  │ to Storage   │  │ & Routing         │  │
-│  └──────────────┘  └──────────────┘  └───────────────────┘  │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Cognee Memory Layer                      │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ Graph    │  │ Vector       │  │ Relational            │  │
-│  │ Store    │  │ Index        │  │ Retrieval             │  │
-│  └──────────┘  └──────────────┘  └───────────────────────┘  │
-│                                                              │
-│  Entities: Person, Object, Place, Event, Relationship        │
-│  Relations: owned_by, gifted_by, located_in, seen_at         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Latency budget
-
-| Stage | Target |
-|---|---|
-| Frame/audio → model understanding | 300–1500ms |
-| Tool-call emission | 300–1200ms |
-| Snapshot upload + metadata persist | 200–1000ms |
-| Cognee memory write | 300–1500ms |
-| Recall query | 300–1200ms |
-
-End-to-end perceived delay: **~1–3 seconds**.
 
 ---
 
@@ -151,6 +136,8 @@ The agent has access to 25+ tools across these categories:
 - Node.js 20+
 - Cognee instance (local or remote)
 - Google Gemini API key
+- Composio Api key
+- 
 
 ### Environment
 
@@ -159,6 +146,7 @@ cp .env.example .env
 # Set these:
 # BASE_URL, API_KEY, TENANT_ID, USER_ID  — Cognee config
 # GEMINI_API_KEY                          — Google Gemini
+# COMPOSIO_API_KEY
 ```
 
 ### Backend
@@ -221,7 +209,7 @@ Kazake stores structured episodic memories, not raw video. Each memory event con
 ### Design principles
 
 - **Event-driven, not frame-rate**: Graph updates on semantic events, not every frame
-- **Speech + vision**: Both modalities required before creating durable memory
+- **Speech + vision**: Both modalities are required before creating durable memory
 - **Dedup on write**: Fast recall check before creating new entities
 - **Confidence gating**: Minimum threshold before persisting
 - **Observation → fact pipeline**: Low-latency observation first, async enrichment later
@@ -229,17 +217,8 @@ Kazake stores structured episodic memories, not raw video. Each memory event con
 
 ---
 
-## Demo flow
+![Material wave loading](https://github.com/user-attachments/assets/a08255eb-9647-471d-9881-61871332249f)
 
-1. Start a live session with camera and microphone
-2. Show objects and narrate naturally — *"This is my desk"*, *"These keys are usually kept near the TV stand"*
-3. Watch memory events appear in real time on the graph
-4. End session, start a new one
-5. Ask a recall question — *"Where is the bottle gifted by my grandfather?"*
-6. Get an answer with image-backed evidence from the earlier observation
+## Developers
 
----
-
-## License
-
-Private — weekend hack project.
+[Sai Nivedh](https://www.github.com/SaiNivedh26)
