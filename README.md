@@ -50,7 +50,7 @@ Cognee is the memory layer behind Kazake. We use it to store, organize, and retr
 
 ## Architecture
 
-<img width="1579" height="1275" alt="shapes at 26-07-06 12 31 02" src="https://github.com/user-attachments/assets/bb3611f0-4b78-44ba-9561-d9b78914774b" />
+<img width="1580" height="1275" alt="shapes at 26-07-06 12 34 01" src="https://github.com/user-attachments/assets/e9c7b77c-30d7-4d45-b9e2-dae3f94ae5b7" />
 
 
 
