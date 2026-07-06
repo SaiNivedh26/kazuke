@@ -2,9 +2,23 @@
 
 **Turn live perception into persistent memory.**
 
-A multimodal AI agent that watches, listens, and remembers meaningful moments from the real world — storing them as graph-backed memory with visual evidence.
+It is a context as a service(CAAS) platform. It captures context from voice, screen sharing, files, and connected tools like Notion, Gmail, Drive, and Slack, then keeps that context available for future use across agents and tools.
+
+Since it has access to Cognee, it can maintain a graphical context between different sessions, not only materialistic data, but also the visual contextual ingestion, for adding daily life activity/events to the unified platform
+
+By default comes with a canvas page to maintain and manage content to pass down to downstream agents as an MCP server. These are specially configured as bi-directional streaming mcp's, so coding agents can update and remove the context as per the user request. 
 
 ---
+
+
+
+<img width="720" height="404" alt="avyfdq" src="https://github.com/user-attachments/assets/2038e12e-ce3d-4635-ae3f-8d9c1b3e28a7" />
+<img width="720" height="404" alt="avyfno" src="https://github.com/user-attachments/assets/c03a2ec3-8bb0-4230-8342-84e7bbe5636e" />
+<img width="720" height="404" alt="avyft7" src="https://github.com/user-attachments/assets/fa841e81-0e95-4b98-94e9-cf2fbad10135" />
+<img width="720" height="404" alt="avyfx0" src="https://github.com/user-attachments/assets/a7a6d58f-e403-4851-85af-4822c8109f70" />
+<img width="720" height="404" alt="avyg85" src="https://github.com/user-attachments/assets/aa5532af-84f5-40c6-8434-ae669053b491" />
+<img width="720" height="404" alt="avygc1" src="https://github.com/user-attachments/assets/c59b3aa9-d9c6-41d1-9f6f-31974d3efc80" />
+
 
 ## What it does
 
